@@ -36,6 +36,7 @@ impl Executor {
         log::info!("FFA version: {}.{}", version.major(), version.minor());
 
         init(self.inner.spawner());
+        log::info!("Executor::run: init done");
 
         loop {
             unsafe {
