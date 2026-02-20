@@ -176,7 +176,7 @@ impl Notify {
     fn nfy_find_entry(&self, uuid: Uuid) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| (entry.service_uuid == uuid && entry.in_use))
+            .position(|entry| entry.service_uuid == uuid && entry.in_use)
     }
 
     fn nfy_find_empty_slot(&self) -> Option<usize> {

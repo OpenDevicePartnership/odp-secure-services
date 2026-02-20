@@ -1,7 +1,7 @@
 bit_register! {
     /// Status register bits as defined in the eSPI specification
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct StatusRegister: u16 {
+    pub struct StatusRegister: little_endian u16 {
         /// Peripheral Posted/Completion Rx Queue Free
         pub pc_free: bool => [0],
         /// Peripheral Non-Posted Rx Queue Free

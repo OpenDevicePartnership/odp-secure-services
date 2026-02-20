@@ -46,17 +46,17 @@ pub fn ffa_smc<F: Function>(_: F) -> Result<SmcResult, Error> {
 #[cfg(all(not(target_arch = "aarch64"), test))]
 pub use self::test_ffa_smc_impl::ffa_smc;
 
-#[cfg(test)]
+#[cfg(all(not(target_arch = "aarch64"), test))]
 pub fn reset_smc_calls() {
     self::test_ffa_smc_impl::reset_smc_calls_internal();
 }
 
-#[cfg(test)]
+#[cfg(all(not(target_arch = "aarch64"), test))]
 pub fn get_smc_call_count() -> u32 {
     self::test_ffa_smc_impl::get_smc_call_count_internal()
 }
 
-#[cfg(test)]
+#[cfg(all(not(target_arch = "aarch64"), test))]
 pub fn get_smc_calls() -> Vec<SmcCall> {
     self::test_ffa_smc_impl::get_smc_calls_internal()
 }
