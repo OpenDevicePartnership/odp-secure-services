@@ -12,7 +12,6 @@ categories = ["embedded", "no-std"]
 [features]
 default = ["std"]
 std = []
-time-driver = ["embassy-time"]
 
 [target.'cfg(target_os = "none")'.dependencies]
 aarch64-rt = { workspace = true, default-features = false, features = [
@@ -22,7 +21,7 @@ aarch64-rt = { workspace = true, default-features = false, features = [
 aarch64-paging.workspace = true
 aarch64-cpu.workspace = true
 hafnium.workspace = true
-embassy-aarch64-haf.workspace = true
+aarch64-haf.workspace = true
 
 [dependencies]
 odp-ffa.workspace = true
@@ -33,12 +32,9 @@ aarch64-paging = { workspace = true, optional = true }
 aarch64-cpu = { workspace = true, optional = true }
 uuid.workspace = true
 log.workspace = true
-embassy-executor.workspace = true
-embassy-sync.workspace = true
 espi-device-stub.workspace = true
 hafnium = { workspace = true, optional = true }
-embassy-aarch64-haf = { workspace = true, optional = true }
-embassy-time = { workspace = true, optional = true }
+aarch64-haf = { workspace = true, optional = true }
 
 [build-dependencies]
 chrono = "0.4"

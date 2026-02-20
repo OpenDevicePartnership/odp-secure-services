@@ -16,7 +16,7 @@ default = []
 aarch64-rt.workspace = true
 aarch64-paging.workspace = true
 aarch64-cpu.workspace = true
-embassy-aarch64-haf.workspace = true
+aarch64-haf.workspace = true
 hafnium.workspace = true
 
 [dependencies]
@@ -25,11 +25,9 @@ ec-service-lib.workspace = true
 aarch64-rt = { workspace = true, optional = true }
 aarch64-paging = { workspace = true, optional = true }
 aarch64-cpu = { workspace = true, optional = true }
-embassy-aarch64-haf = { workspace = true, optional = true }
+aarch64-haf = { workspace = true, optional = true }
 hafnium = { workspace = true, optional = true }
 log.workspace = true
-embassy-executor.workspace = true
-embassy-sync.workspace = true
 uuid.workspace = true
 
 

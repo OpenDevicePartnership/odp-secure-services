@@ -436,7 +436,7 @@ impl Service for Notify {
         UUID
     }
 
-    async fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+    fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let req: NotifyReq = msg.clone().into();
         debug!("Received notify command: {:?}", req.msg_info.message_id());
 

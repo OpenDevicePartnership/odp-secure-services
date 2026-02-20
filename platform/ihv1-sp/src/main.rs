@@ -17,13 +17,18 @@ fn main() {
 }
 
 #[cfg(target_os = "none")]
-#[embassy_executor::main(executor = "embassy_aarch64_haf::Executor")]
-async fn embassy_main(_spawner: embassy_executor::Spawner) {
+fn main() -> ! {
     use ec_service_lib::service_list;
+    use odp_ffa::Function;
 
     log::info!("IHV1 Secure Partition - build time: {}", env!("BUILD_TIME"));
+
+    let version = odp_ffa::Version::new().exec().unwrap();
+    log::info!("FFA version: {}.{}", version.major(), version.minor());
+
     service_list![ec_service_lib::services::Thermal::new()]
-        .run_message_loop(async |_| Ok(()))
-        .await
+        .run_message_loop(|_| Ok(()))
         .expect("Error in run_message_loop");
+
+    unreachable!()
 }

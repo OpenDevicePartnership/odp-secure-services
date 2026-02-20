@@ -1,5 +1,8 @@
 #!/bin/sh
 set -e
-cd "$(git rev-parse --show-toplevel)"
+PROJECT_DIR=$(git rev-parse --show-toplevel)
+cd "$PROJECT_DIR"
 cargo fmt --check
 cargo test
+cd "$PROJECT_DIR/platform/qemu-sp" && cargo build --target=aarch64-unknown-none
+cd "$PROJECT_DIR/platform/ihv1-sp" && cargo build --target=aarch64-unknown-none

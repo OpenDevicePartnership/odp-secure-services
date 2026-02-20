@@ -43,80 +43,74 @@ impl TryInto<u32> for StubConfigRegister {
 }
 
 impl IndependentChannel for EspiDeviceStub {
-    async fn get_configuration_register<T: ConfigRegister>(&self) -> Result<T> {
+    fn get_configuration_register<T: ConfigRegister>(&self) -> Result<T> {
         info!("get_configuration_register: {:?}", T::OFFSET);
         Ok(T::try_from(0).unwrap())
     }
 
-    async fn set_configuration_register<T: ConfigRegister>(&self, value: T) -> Result<()> {
+    fn set_configuration_register<T: ConfigRegister>(&self, value: T) -> Result<()> {
         info!("set_configuration_register: {:?}", value);
         Ok(())
     }
 
-    async fn get_status(&self) -> Result<espi_device::StatusRegister> {
+    fn get_status(&self) -> Result<espi_device::StatusRegister> {
         info!("get_status");
         Ok(espi_device::StatusRegister::try_from(0).unwrap())
     }
 
-    async fn reset(&self) -> Result<()> {
+    fn reset(&self) -> Result<()> {
         info!("reset");
         Ok(())
     }
 }
 
 impl PeripheralChannel for EspiDeviceStub {
-    async fn mem32_write_short<D: ShortOpData>(&self, address: u32, data: D) -> Result<()> {
+    fn mem32_write_short<D: ShortOpData>(&self, address: u32, data: D) -> Result<()> {
         info!("mem32_write_short: {:?} = {:?}", address, data);
         Ok(())
     }
 
-    async fn mem32_read_short<D: ShortOpData>(&self, address: u32) -> Result<D> {
+    fn mem32_read_short<D: ShortOpData>(&self, address: u32) -> Result<D> {
         info!("mem32_read_short: {:?}", address);
         Ok(D::try_from_u32(0).unwrap())
     }
 
-    async fn io_read_short<D: ShortOpData>(&self, address: u16) -> Result<D> {
+    fn io_read_short<D: ShortOpData>(&self, address: u16) -> Result<D> {
         info!("io_read_short: {:?}", address);
         Ok(D::try_from_u32(0).unwrap())
     }
 
-    async fn io_write_short<D: ShortOpData>(&self, address: u16, data: D) -> Result<()> {
+    fn io_write_short<D: ShortOpData>(&self, address: u16, data: D) -> Result<()> {
         info!("io_write_short: {:?} = {:?}", address, data);
         Ok(())
     }
 
-    async fn put_posted_mem32_write(&self, tag: Tag, address: u32, data: &[u8]) -> Result<()> {
+    fn put_posted_mem32_write(&self, tag: Tag, address: u32, data: &[u8]) -> Result<()> {
         info!("put_posted_mem32_write({:?}, {:?}): {:?}", tag, address, data);
         Ok(())
     }
 
-    async fn put_np_mem32_read<'buf>(&self, tag: Tag, address: u32, buffer: &'buf mut [u8]) -> Result<&'buf [u8]> {
+    fn put_np_mem32_read<'buf>(&self, tag: Tag, address: u32, buffer: &'buf mut [u8]) -> Result<&'buf [u8]> {
         info!("put_np_mem32_read({:?}, {:?}): {:?}", tag, address, buffer);
         Ok(buffer)
     }
 
-    async fn put_posted_mem64_write(&self, tag: Tag, address: u64, data: &[u8]) -> Result<()> {
+    fn put_posted_mem64_write(&self, tag: Tag, address: u64, data: &[u8]) -> Result<()> {
         info!("put_posted_mem64_write({:?}, {:?}): {:?}", tag, address, data);
         Ok(())
     }
 
-    async fn put_np_mem64_read<'buf>(&self, tag: Tag, address: u64, buffer: &'buf mut [u8]) -> Result<&'buf [u8]> {
+    fn put_np_mem64_read<'buf>(&self, tag: Tag, address: u64, buffer: &'buf mut [u8]) -> Result<&'buf [u8]> {
         info!("put_np_mem64_read({:?}, {:?}): {:?}", tag, address, buffer);
         Ok(buffer)
     }
 
-    async fn put_posted_message(&self, tag: Tag, code: u8, specific_bytes: &[u8; 4]) -> Result<()> {
+    fn put_posted_message(&self, tag: Tag, code: u8, specific_bytes: &[u8; 4]) -> Result<()> {
         info!("put_posted_message({:?}, {:?}, {:?})", tag, code, specific_bytes);
         Ok(())
     }
 
-    async fn put_posted_message_with_data(
-        &self,
-        tag: Tag,
-        code: u8,
-        specific_bytes: &[u8; 4],
-        data: &[u8],
-    ) -> Result<()> {
+    fn put_posted_message_with_data(&self, tag: Tag, code: u8, specific_bytes: &[u8; 4], data: &[u8]) -> Result<()> {
         info!(
             "put_posted_message_with_data({:?}, {:?}, {:?}): {:?}",
             tag, code, specific_bytes, data
@@ -126,12 +120,12 @@ impl PeripheralChannel for EspiDeviceStub {
 }
 
 impl OobChannel for EspiDeviceStub {
-    async fn put_oob(&self, data: &[u8], tag: Tag) -> Result<()> {
+    fn put_oob(&self, data: &[u8], tag: Tag) -> Result<()> {
         info!("put_oob({:?}): {:?}", tag, data);
         Ok(())
     }
 
-    async fn get_oob<'a>(&self, buffer: &'a mut [u8]) -> Result<&'a [u8]> {
+    fn get_oob<'a>(&self, buffer: &'a mut [u8]) -> Result<&'a [u8]> {
         info!("get_oob({:?})", buffer);
         Ok(buffer)
     }

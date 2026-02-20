@@ -1,4 +1,4 @@
-use embassy_aarch64_haf::{haf_interrupt_handler_impl, HafInterruptHandler};
+use aarch64_haf::{haf_interrupt_handler_impl, HafInterruptHandler};
 
 pub struct QemuInterriptHandler;
 

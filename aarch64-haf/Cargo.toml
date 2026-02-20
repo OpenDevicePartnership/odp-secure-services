@@ -1,0 +1,13 @@
+[package]
+name = "aarch64-haf"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Dylan Knutson <dylanknutson@microsoft.com>"]
+description = "AArch64 HAL for Hafnium"
+
+[dependencies]
+aarch64-cpu.workspace = true
+critical-section = { workspace = true, features = ["restore-state-u64"] }
+log.workspace = true
+hafnium.workspace = true

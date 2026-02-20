@@ -7,5 +7,4 @@ license = "MIT"
 
 [dependencies]
 aarch64-cpu.workspace = true
-embassy-sync.workspace = true
 log.workspace = true

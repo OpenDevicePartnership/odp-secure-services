@@ -9,6 +9,7 @@
 #[cfg(target_os = "none")]
 mod baremetal;
 
+#[cfg(any(target_os = "none", test))]
 mod battery;
 
 #[cfg(not(target_os = "none"))]
@@ -17,11 +18,14 @@ fn main() {
 }
 
 #[cfg(target_os = "none")]
-#[embassy_executor::main(executor = "embassy_aarch64_haf::Executor")]
-async fn embassy_main(_spawner: embassy_executor::Spawner) {
+fn main() -> ! {
     use ec_service_lib::service_list;
+    use odp_ffa::Function;
 
     log::info!("QEMU Secure Partition - build time: {}", env!("BUILD_TIME"));
+
+    let version = odp_ffa::Version::new().exec().unwrap();
+    log::info!("FFA version: {}.{}", version.major(), version.minor());
 
     service_list![
         ec_service_lib::services::Thermal::new(),
@@ -29,7 +33,8 @@ async fn embassy_main(_spawner: embassy_executor::Spawner) {
         ec_service_lib::services::Notify::new(),
         battery::Battery::new()
     ]
-    .run_message_loop(async |_| Ok(()))
-    .await
+    .run_message_loop(|_| Ok(()))
     .expect("Error in run_message_loop");
+
+    unreachable!()
 }

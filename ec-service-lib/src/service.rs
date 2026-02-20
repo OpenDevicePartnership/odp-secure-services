@@ -1,10 +1,8 @@
-use core::future::Future;
-
 use log::error;
 use odp_ffa::{FunctionId, MsgSendDirectReq2, MsgSendDirectResp2};
 use uuid::Uuid;
 
-use crate::async_msg_loop;
+use crate::msg_loop;
 
 pub type Result<T> = core::result::Result<T, odp_ffa::Error>;
 
@@ -12,13 +10,13 @@ pub trait Service {
     fn service_name(&self) -> &'static str;
     fn service_uuid(&self) -> Uuid;
 
-    fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> impl Future<Output = Result<MsgSendDirectResp2>> {
-        async move { self.handler_unimplemented(msg).await }
+    fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+        self.handler_unimplemented(msg)
     }
 }
 
 pub trait ServiceNodeHandler {
-    fn handle(&mut self, msg: MsgSendDirectReq2) -> impl Future<Output = Result<MsgSendDirectResp2>>;
+    fn handle(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2>;
 }
 
 pub struct ServiceNode<This: Service, Next: ServiceNodeHandler> {
@@ -27,17 +25,17 @@ pub struct ServiceNode<This: Service, Next: ServiceNodeHandler> {
 }
 
 impl<This: Service, Next: ServiceNodeHandler> ServiceNode<This, Next> {
-    pub async fn run_message_loop(
+    pub fn run_message_loop(
         &mut self,
-        before_handle_message: impl AsyncFnMut(&MsgSendDirectReq2) -> core::result::Result<(), odp_ffa::Error>,
+        mut before_handle_message: impl FnMut(&MsgSendDirectReq2) -> core::result::Result<(), odp_ffa::Error>,
     ) -> Result<()> {
-        async_msg_loop(async |msg| self.handle(msg).await, before_handle_message).await
+        msg_loop(|msg| self.handle(msg), |msg| before_handle_message(msg))
     }
 }
 
 pub struct ServiceNodeNone;
 impl ServiceNodeHandler for ServiceNodeNone {
-    async fn handle(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+    fn handle(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         error!("Unknown UUID {}", msg.uuid());
         Err(odp_ffa::Error::Other("Unknown UUID"))
     }
@@ -50,11 +48,11 @@ impl<S: Service, N: ServiceNodeHandler> ServiceNode<S, N> {
 }
 
 impl<This: Service, Next: ServiceNodeHandler> ServiceNodeHandler for ServiceNode<This, Next> {
-    async fn handle(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+    fn handle(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         if msg.uuid() == self.service.service_uuid() {
-            self.service.ffa_msg_send_direct_req2(msg).await
+            self.service.ffa_msg_send_direct_req2(msg)
         } else {
-            self.next.handle(msg).await
+            self.next.handle(msg)
         }
     }
 }
@@ -75,7 +73,7 @@ macro_rules! service_list {
 }
 
 pub(crate) trait ServiceImpl: Service {
-    async fn handler_unimplemented(&self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+    fn handler_unimplemented(&self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         error!(
             "MsgSendDirectReq2 is unimplemented in {}: {:?}",
             self.service_name(),
