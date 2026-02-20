@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "dev-hooks",
     "odp-ffa",
     "ec-service-lib",
     "espi-device",
