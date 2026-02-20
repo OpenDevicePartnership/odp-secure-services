@@ -112,3 +112,39 @@ pub struct EcMemory {
     pub batt: Battery,
     pub therm: Thermal,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn version_size_is_four_bytes() {
+        assert_eq!(size_of::<Version>(), 4, "Version must be 4 bytes for C layout");
+    }
+
+    #[test]
+    fn notifications_size_is_four_bytes() {
+        assert_eq!(
+            size_of::<Notifications>(),
+            4,
+            "Notifications must be 4 bytes for C layout"
+        );
+    }
+
+    #[test]
+    fn ec_memory_struct_is_packed() {
+        // EcMemory should have no trailing padding; size is sum of field sizes
+        let expected_min = size_of::<Version>()
+            + size_of::<Capabilities>()
+            + size_of::<Notifications>()
+            + size_of::<TimeAlarm>()
+            + size_of::<Battery>()
+            + size_of::<Thermal>();
+        assert_eq!(
+            size_of::<EcMemory>(),
+            expected_min,
+            "EcMemory must be packed with no padding"
+        );
+    }
+}

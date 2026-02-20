@@ -108,3 +108,21 @@ impl Service for Battery {
         Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_new_returns_default() {
+        let bat = Battery::new();
+        assert_eq!(bat.service_name(), "Battery");
+    }
+
+    #[test]
+    fn battery_service_uuid_is_ec_battery() {
+        let bat = Battery::new();
+        let expected = uuid!("25cb5207-ac36-427d-aaef-3aa78877d27e");
+        assert_eq!(bat.service_uuid(), expected);
+    }
+}

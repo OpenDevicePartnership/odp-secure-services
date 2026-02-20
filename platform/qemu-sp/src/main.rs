@@ -9,6 +9,8 @@
 #[cfg(target_os = "none")]
 mod baremetal;
 
+mod battery;
+
 #[cfg(not(target_os = "none"))]
 fn main() {
     println!("qemu-sp stub");
@@ -25,7 +27,7 @@ async fn embassy_main(_spawner: embassy_executor::Spawner) {
         ec_service_lib::services::Thermal::new(),
         ec_service_lib::services::FwMgmt::new(),
         ec_service_lib::services::Notify::new(),
-        baremetal::Battery::new()
+        battery::Battery::new()
     ]
     .run_message_loop(async |_| Ok(()))
     .await

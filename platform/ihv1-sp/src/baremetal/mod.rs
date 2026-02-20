@@ -1,6 +1,5 @@
 mod interrupt;
 mod panic;
-mod services;
 
 use aarch64_rt::entry;
 use ec_service_lib::sp_logger::SpLogger;

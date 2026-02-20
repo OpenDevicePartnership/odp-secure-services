@@ -1,5 +1,4 @@
-#![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_std]
 
 mod service;
 pub mod services;

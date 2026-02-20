@@ -9,5 +9,5 @@ An example secure partition reference for independent hardware vendors.
 
 ```
 cargo build --target=aarch64-unknown-none
-cargo objcopy -- -O binary target/aarch64-unknown-none/debug/ihv1-ec-sp.bin
+cargo objcopy --target=aarch64-unknown-none -- -O binary ihv1-ec-sp.bin
 ```

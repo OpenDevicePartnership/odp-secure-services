@@ -1,9 +1,7 @@
-mod battery;
 mod interrupt;
 mod panic;
 
 use aarch64_rt::entry;
-pub use battery::Battery;
 use ec_service_lib::sp_logger::SpLogger;
 
 entry!(aarch64_rt_main);

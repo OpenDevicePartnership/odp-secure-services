@@ -9,6 +9,8 @@
 #[cfg(target_os = "none")]
 mod baremetal;
 
+mod services;
+
 #[cfg(not(target_os = "none"))]
 fn main() {
     println!("ihv1-sp stub");
