@@ -1,18 +1,23 @@
 # Hafnium EC Service in Rust
 
 ## Overview
+
 This is a sample implementation of the EC service which runs under a dedicated secure partition in Hafnium.
 It is written in Rust and has dependencies on FF-A, MU UEFI, Hafnium and TFA.
 
 ## Feature Status
+
 The following components are available within this crate:
+
 ```
 ec-service-lib - Common code used in implementation of EC SP
 platform       - Contains target specific code for supported platforms
 ```
 
 ## Customizations
+
 Update memory map definitions in platforms/plat/linker folder to match the definition from your dts config file.
+
 ```
 	load-address = <0x0 0x20400000>;
 	entrypoint-offset = <0x10000>;
@@ -29,6 +34,7 @@ MEMORY
 ```
 
 ## Build Instructions
+
 From the root folder you can build all platforms using
 `cargo build`
 
@@ -39,13 +45,9 @@ To convert the output ELF to binary run
 `cargo objcopy --target=aarch64-unknown-none -- -O binary output.bin`
 
 ## Build Validation
-Before submission the following commands should all be validated.
+
+Before submission, run the precommit hook to validate the code.
+
 ```
-cargo build
-cargo build --target=aarch64-unknown-none
-cargo +nightly fmt
-cargo +nightly clippy
-cargo hack --feature-powerset check
-cargo deny check
-cargo test
+.husky/pre-commit
 ```

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Git hooks setup (husky-rs); not published"
+license = "MIT"
 
 [dependencies]
 husky-rs = "0.3.2"
