@@ -20,7 +20,7 @@ macro_rules! config_register {
 config_register!(DeviceId = 0x04);
 bit_register! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct DeviceId: u32 {
+    pub struct DeviceId: little_endian u32 {
         pub version_id: u8 => [0:7],
     }
 }
@@ -28,7 +28,7 @@ bit_register! {
 config_register!(GeneralCapabilities = 0x08);
 bit_register! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct GeneralCapabilities: u32 {
+    pub struct GeneralCapabilities: little_endian u32 {
         pub crc_checking_enable: bool => [31],
         pub response_modifier_enable: bool => [30],
         /* [29] - reserved */
@@ -52,7 +52,7 @@ config_register!(PeripheralChannelCapabilities = 0x10);
 bit_register! {
     /// Channel 0 (Peripheral) capabilities and configurations
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct PeripheralChannelCapabilities: u32 {
+    pub struct PeripheralChannelCapabilities: little_endian u32 {
         /// Peripheral Channel Maximum Read Request Size: eSPI master
         /// sets the maximum read request size for the Peripheral channel.
         /// The length of the read request must not cross the naturally aligned
@@ -89,7 +89,7 @@ config_register!(VwireChannelCapabilities = 0x20);
 bit_register! {
     /// Channel 1 (Virtual Wire) capabilities and configurations
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct VwireChannelCapabilities: u32 {
+    pub struct VwireChannelCapabilities: little_endian u32 {
         pub max_vw_count: u8 => [16:21],
         pub max_vw_count_support: u8 => [8:13],
         pub channel_ready: bool => [1],
@@ -101,7 +101,7 @@ config_register!(OobChannelCapabilities = 0x30);
 bit_register! {
     /// Channel 2 (OOB Message) capabilities and configurations
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct OobChannelCapabilities: u32 {
+    pub struct OobChannelCapabilities: little_endian u32 {
         pub max_payload_size: MaxPayloadSize => [8:10],
         pub max_payload_size_support: MaxPayloadSizeSupport => [4:6],
         pub channel_ready: bool => [1],
@@ -111,7 +111,7 @@ bit_register! {
 config_register!(FlashChannelCapabilities = 0x40);
 bit_register! {
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct FlashChannelCapabilities: u32 {
+    pub struct FlashChannelCapabilities: little_endian u32 {
         pub max_read_request_size: MaxReadRequestSize => [12:14],
         pub flash_sharing_mode: FlashSharingMode => [11:11],
         pub max_payload_size_selected: MaxPayloadSize => [8:10],

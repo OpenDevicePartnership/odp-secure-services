@@ -1,12 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
+    "dev-hooks",
     "odp-ffa",
     "ec-service-lib",
     "espi-device",
     "espi-device-stub",
     "platform/ihv1-sp",
     "platform/qemu-sp",
+    "aarch64-haf",
 ]
 
 [workspace.package]
@@ -20,18 +22,11 @@ aarch64-rt = { version = "0.2.2", default-features = false, features = [
     "el1",
     "exceptions",
 ] }
+aarch64-haf = { path = "aarch64-haf" }
 bit-register = { git = "https://github.com/OpenDevicePartnership/odp-utilities" }
 critical-section = { version = "1.1.0", default-features = false }
 debug-non-default = { git = "https://github.com/OpenDevicePartnership/odp-utilities" }
 ec-service-lib = { path = "ec-service-lib" }
-embassy-aarch64-haf = { path = "embassy-aarch64-haf" }
-embassy-executor = { version = "0.9.1" }
-embassy-futures = { version = "0.1.2" }
-embassy-hal-internal = { version = "0.3.0" }
-embassy-sync = { version = "0.7.2" }
-embassy-time = { version = "0.5.0" }
-embassy-time-driver = { version = "0.2.1" }
-embassy-time-queue-utils = { version = "0.3.0" }
 embedded-hal = { git = "https://github.com/rust-embedded/embedded-hal" }
 espi-device = { path = "espi-device" }
 espi-device-stub = { path = "espi-device-stub" }

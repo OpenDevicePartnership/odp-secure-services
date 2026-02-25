@@ -199,7 +199,7 @@ impl Service for Thermal {
         UUID
     }
 
-    async fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
+    fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let cmd = msg.u8_at(0);
         debug!("Received ThmMgmt command 0x{:x}", cmd);
 

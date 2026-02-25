@@ -9,5 +9,5 @@ An implementation of embedded controller secure partition for QEMU haf-ec-servic
 
 ```
 cargo build --target=aarch64-unknown-none
-cargo objcopy -- -O binary target/aarch64-unknown-none/debug/qemu-ec-sp.bin
+cargo objcopy --target=aarch64-unknown-none -- -O binary qemu-ec-sp.bin
 ```

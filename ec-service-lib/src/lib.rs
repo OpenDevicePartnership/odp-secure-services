@@ -1,5 +1,4 @@
-#![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_std]
 
 mod service;
 pub mod services;
@@ -63,20 +62,20 @@ impl HafEcService {
     }
 }
 
-async fn async_msg_loop(
-    mut handler: impl AsyncFnMut(MsgSendDirectReq2) -> core::result::Result<MsgSendDirectResp2, odp_ffa::Error>,
-    mut before_handle_message: impl AsyncFnMut(&MsgSendDirectReq2) -> core::result::Result<(), odp_ffa::Error>,
+pub(crate) fn msg_loop(
+    mut handler: impl FnMut(MsgSendDirectReq2) -> core::result::Result<MsgSendDirectResp2, odp_ffa::Error>,
+    mut before_handle_message: impl FnMut(&MsgSendDirectReq2) -> core::result::Result<(), odp_ffa::Error>,
 ) -> core::result::Result<(), odp_ffa::Error> {
-    info!("async_msg_loop: start");
+    info!("msg_loop: start");
     let mut msg = MsgWait::new().exec()?;
-    info!("async_msg_loop: msg: {:?}", msg);
+    info!("msg_loop: msg: {:?}", msg);
     loop {
         msg = if let Ok(request) = MsgSendDirectReq2::try_from_smc_call(msg.clone()) {
-            info!("async_msg_loop: request: {:?}", request);
-            before_handle_message(&request).await?;
-            match handler(request).await {
+            info!("msg_loop: request: {:?}", request);
+            before_handle_message(&request)?;
+            match handler(request) {
                 Ok(response) => {
-                    info!("async_msg_loop: response: {:?}", response);
+                    info!("msg_loop: response: {:?}", response);
                     response.exec()?
                 }
                 Err(e) => {

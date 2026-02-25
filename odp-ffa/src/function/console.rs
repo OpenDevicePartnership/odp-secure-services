@@ -108,7 +108,7 @@ impl log::Log for SpLogger {
     fn flush(&self) {}
 }
 
-#[cfg(test)]
+#[cfg(all(not(target_arch = "aarch64"), test))]
 mod tests {
     use super::*;
     use crate::smc::{get_smc_call_count, get_smc_calls, reset_smc_calls, SmcCall};

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+PROJECT_DIR=$(git rev-parse --show-toplevel)
+cd "$PROJECT_DIR"
+cargo deny check
+cargo fmt --check
+cargo clippy --all-targets --all-features
+cargo test
+cd "$PROJECT_DIR/platform/qemu-sp" && cargo build --target=aarch64-unknown-none
+cd "$PROJECT_DIR/platform/ihv1-sp" && cargo build --target=aarch64-unknown-none
