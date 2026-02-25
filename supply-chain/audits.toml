@@ -1,4 +1,12 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.husky-rs]]
+who = "Dylan Knutson <tcdknutson@gmail.com>"
+criteria = "safe-to-run"
+version = "0.3.2"
+notes = """
+Add any notes about your audit below this line:
+
+PR discussion regarding safe-to-run status: https://github.com/OpenDevicePartnership/odp-secure-services/pull/43#discussion_r2849005190
+"""

@@ -6,5 +6,5 @@ publish = false
 description = "Git hooks setup (husky-rs); not published"
 license = "MIT"
 
-[dependencies]
+[dev-dependencies]
 husky-rs = "0.3.2"
