@@ -52,6 +52,11 @@ impl<This: Service, Next: ServiceNodeHandler> ServiceNodeHandler for ServiceNode
         if msg.uuid() == self.service.service_uuid() {
             self.service.ffa_msg_send_direct_req2(msg)
         } else {
+            log::debug!(
+                "UUID does not match {} ({}), forwarding to next node",
+                self.service.service_name(),
+                self.service.service_uuid()
+            );
             self.next.handle(msg)
         }
     }
