@@ -1,17 +1,17 @@
 use uuid::Uuid;
 
-use crate::{smc::SmcParams, util::combine_low_high_u16, Error, HasRegisterPayload, Payload, RegisterPayload};
+use crate::{smc::SmcParams, util::combine_low_high_u16, DirectMessagePayload, Error, HasRegisterPayload};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectMessage {
     pub source_id: u16,
     pub destination_id: u16,
     pub uuid: Uuid,
-    pub payload: RegisterPayload,
+    pub payload: DirectMessagePayload,
 }
 
 impl HasRegisterPayload for DirectMessage {
-    fn payload(&self) -> &RegisterPayload {
+    fn payload(&self) -> &DirectMessagePayload {
         &self.payload
     }
 }
@@ -51,7 +51,7 @@ impl TryFrom<SmcParams> for DirectMessage {
         ];
         let payload_bytes_iter = payload_regs.iter().flat_map(|&reg| u64::to_le_bytes(reg).into_iter());
 
-        let payload = RegisterPayload::from_iter(payload_bytes_iter);
+        let payload = DirectMessagePayload::from_iter(payload_bytes_iter);
 
         Ok(DirectMessage {
             source_id,
@@ -72,23 +72,23 @@ mod tests {
     #[case::simple_message(
         1, 2,
         uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8"),
-        RegisterPayload::from_iter((0..112).map(|i| i as u8))
+        DirectMessagePayload::from_iter((0..112).map(|i| i as u8))
     )]
     #[case::zero_ids(
         0, 0,
         uuid!("00000000-0000-0000-0000-000000000000"),
-        RegisterPayload::from_iter(core::iter::repeat(0u8).take(112))
+        DirectMessagePayload::from_iter(core::iter::repeat(0u8).take(112))
     )]
     #[case::max_ids(
         u16::MAX, u16::MAX,
         uuid!("ffffffff-ffff-ffff-ffff-ffffffffffff"),
-        RegisterPayload::from_iter((0..112).map(|i| (i % 256) as u8))
+        DirectMessagePayload::from_iter((0..112).map(|i| (i % 256) as u8))
     )]
     fn test_direct_message_round_trip(
         #[case] source_id: u16,
         #[case] destination_id: u16,
         #[case] uuid: Uuid,
-        #[case] payload: RegisterPayload,
+        #[case] payload: DirectMessagePayload,
     ) {
         let original_message = DirectMessage {
             source_id,

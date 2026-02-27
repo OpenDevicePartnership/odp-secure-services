@@ -19,7 +19,7 @@ fn main() {
 
 #[cfg(target_os = "none")]
 fn main() -> ! {
-    use ec_service_lib::service_list;
+    use ec_service_lib::MessageHandler;
     use odp_ffa::Function;
 
     log::info!("QEMU Secure Partition - build time: {}", env!("BUILD_TIME"));
@@ -27,14 +27,13 @@ fn main() -> ! {
     let version = odp_ffa::Version::new().exec().unwrap();
     log::info!("FFA version: {}.{}", version.major(), version.minor());
 
-    service_list![
-        ec_service_lib::services::Thermal::new(),
-        ec_service_lib::services::FwMgmt::new(),
-        ec_service_lib::services::Notify::new(),
-        battery::Battery::new()
-    ]
-    .run_message_loop(|_| Ok(()))
-    .expect("Error in run_message_loop");
+    MessageHandler::new()
+        .append(ec_service_lib::services::Thermal::new())
+        .append(ec_service_lib::services::FwMgmt::new())
+        .append(ec_service_lib::services::Notify::new())
+        .append(battery::Battery::new())
+        .run_message_loop()
+        .expect("Error in run_message_loop");
 
     unreachable!()
 }
