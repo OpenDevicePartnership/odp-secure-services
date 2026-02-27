@@ -1,6 +1,7 @@
-use crate::service::{Result, Service};
+use crate::service::Service;
+use crate::Result;
 use log::{debug, error};
-use odp_ffa::{Function, MsgSendDirectReq2, MsgSendDirectResp2, Payload, RegisterPayload, Yield};
+use odp_ffa::{DirectMessagePayload, Function, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2, Yield};
 use uuid::{uuid, Builder, Uuid};
 
 // Protocol CMD definitions for Thermal
@@ -16,9 +17,9 @@ struct GenericRsp {
     status: i64,
 }
 
-impl From<GenericRsp> for RegisterPayload {
+impl From<GenericRsp> for DirectMessagePayload {
     fn from(value: GenericRsp) -> Self {
-        RegisterPayload::from_iter(value.status.to_le_bytes())
+        DirectMessagePayload::from_iter(value.status.to_le_bytes())
     }
 }
 
@@ -28,9 +29,9 @@ struct TempRsp {
     temp: u64,
 }
 
-impl From<TempRsp> for RegisterPayload {
+impl From<TempRsp> for DirectMessagePayload {
     fn from(value: TempRsp) -> Self {
-        RegisterPayload::from_iter(value.status.to_le_bytes().into_iter().chain(value.temp.to_le_bytes()))
+        DirectMessagePayload::from_iter(value.status.to_le_bytes().into_iter().chain(value.temp.to_le_bytes()))
     }
 }
 
@@ -41,8 +42,8 @@ struct ThresholdReq {
     low_temp: u32,
     high_temp: u32,
 }
-impl<P: Payload> From<&P> for ThresholdReq {
-    fn from(msg: &P) -> ThresholdReq {
+impl From<&DirectMessagePayload> for ThresholdReq {
+    fn from(msg: &DirectMessagePayload) -> ThresholdReq {
         ThresholdReq {
             id: msg.u8_at(1),
             timeout: msg.u16_at(3) as u32,
@@ -59,7 +60,7 @@ struct ReadVarReq {
     var_uuid: Uuid,
 }
 
-impl From<ReadVarReq> for RegisterPayload {
+impl From<ReadVarReq> for DirectMessagePayload {
     fn from(value: ReadVarReq) -> Self {
         let iter = value
             .id
@@ -68,12 +69,12 @@ impl From<ReadVarReq> for RegisterPayload {
             .chain(value.len.to_le_bytes())
             .chain(value.var_uuid.as_bytes().iter().copied());
 
-        RegisterPayload::from_iter(iter)
+        DirectMessagePayload::from_iter(iter)
     }
 }
 
-impl<P: Payload> From<&P> for ReadVarReq {
-    fn from(msg: &P) -> ReadVarReq {
+impl From<&DirectMessagePayload> for ReadVarReq {
+    fn from(msg: &DirectMessagePayload) -> ReadVarReq {
         ReadVarReq {
             id: msg.u8_at(1),
             len: msg.u16_at(2),
@@ -88,9 +89,9 @@ struct ReadVarRsp {
     data: u32,
 }
 
-impl From<ReadVarRsp> for RegisterPayload {
+impl From<ReadVarRsp> for DirectMessagePayload {
     fn from(value: ReadVarRsp) -> Self {
-        RegisterPayload::from_iter(value.status.to_le_bytes().into_iter().chain(value.data.to_le_bytes()))
+        DirectMessagePayload::from_iter(value.status.to_le_bytes().into_iter().chain(value.data.to_le_bytes()))
     }
 }
 
@@ -102,8 +103,8 @@ struct SetVarReq {
     data: u32,
 }
 
-impl<P: Payload> From<&P> for SetVarReq {
-    fn from(msg: &P) -> SetVarReq {
+impl From<&DirectMessagePayload> for SetVarReq {
+    fn from(msg: &DirectMessagePayload) -> SetVarReq {
         SetVarReq {
             id: msg.u8_at(1),
             len: msg.u16_at(2),
@@ -122,7 +123,7 @@ impl Thermal {
     }
 
     fn get_temperature(&self, msg: &MsgSendDirectReq2) -> TempRsp {
-        debug!("get_temperature sensor 0x{:x}", msg.u8_at(1));
+        debug!("get_temperature sensor 0x{:x}", msg.payload().u8_at(1));
 
         // Tell OS to delay 1 ms
         Yield::new(0x100000000).exec().unwrap();
@@ -134,7 +135,7 @@ impl Thermal {
     }
 
     fn set_threshold(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
-        let req: ThresholdReq = msg.into();
+        let req: ThresholdReq = msg.payload().into();
         debug!(
             "set_threshold temperature sensor 0x{:x}
                 Timeout: 0x{:x}
@@ -155,7 +156,7 @@ impl Thermal {
     }
 
     fn get_variable(&self, msg: &MsgSendDirectReq2) -> ReadVarRsp {
-        let req: ReadVarReq = msg.into();
+        let req: ReadVarReq = msg.payload().into();
         debug!(
             "get_variable instance id: 0x{:x}
                 length: 0x{:x}
@@ -175,7 +176,7 @@ impl Thermal {
     }
 
     fn set_variable(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
-        let req: SetVarReq = msg.into();
+        let req: SetVarReq = msg.payload().into();
         debug!(
             "get_variable instance id: 0x{:x}
                 length: 0x{:x}
@@ -188,28 +189,21 @@ impl Thermal {
     }
 }
 
-const UUID: Uuid = uuid!("31f56da7-593c-4d72-a4b3-8fc7171ac073");
-
 impl Service for Thermal {
-    fn service_name(&self) -> &'static str {
-        "Thermal"
-    }
-
-    fn service_uuid(&self) -> Uuid {
-        UUID
-    }
+    const UUID: Uuid = uuid!("31f56da7-593c-4d72-a4b3-8fc7171ac073");
+    const NAME: &'static str = "Thermal";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
-        let cmd = msg.u8_at(0);
+        let cmd = msg.payload().u8_at(0);
         debug!("Received ThmMgmt command 0x{:x}", cmd);
 
         let payload = match cmd {
-            EC_THM_GET_TMP => RegisterPayload::from(self.get_temperature(&msg)),
-            EC_THM_SET_THRS => RegisterPayload::from(self.set_threshold(&msg)),
-            EC_THM_GET_THRS => RegisterPayload::from(self.get_threshold(&msg)),
-            EC_THM_SET_SCP => RegisterPayload::from(self.set_cooling_policy(&msg)),
-            EC_THM_GET_VAR => RegisterPayload::from(self.get_variable(&msg)),
-            EC_THM_SET_VAR => RegisterPayload::from(self.set_variable(&msg)),
+            EC_THM_GET_TMP => DirectMessagePayload::from(self.get_temperature(&msg)),
+            EC_THM_SET_THRS => DirectMessagePayload::from(self.set_threshold(&msg)),
+            EC_THM_GET_THRS => DirectMessagePayload::from(self.get_threshold(&msg)),
+            EC_THM_SET_SCP => DirectMessagePayload::from(self.set_cooling_policy(&msg)),
+            EC_THM_GET_VAR => DirectMessagePayload::from(self.get_variable(&msg)),
+            EC_THM_SET_VAR => DirectMessagePayload::from(self.set_variable(&msg)),
             _ => {
                 error!("Unknown Thermal Command: {}", cmd);
                 return Err(odp_ffa::Error::Other("Unknown Thermal Command"));

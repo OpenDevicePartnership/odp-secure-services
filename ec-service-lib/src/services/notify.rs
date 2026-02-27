@@ -1,6 +1,6 @@
 use crate::{Result, Service};
 use log::{debug, error, info};
-use odp_ffa::{ErrorCode, MsgSendDirectReq2, MsgSendDirectResp2, Payload, RegisterPayload};
+use odp_ffa::{DirectMessagePayload, ErrorCode, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
 use uuid::{uuid, Uuid};
 
 // Hard cap for the number of services that can be registered
@@ -70,14 +70,17 @@ impl NotifyReq {
 
 impl From<MsgSendDirectReq2> for NotifyReq {
     fn from(msg: MsgSendDirectReq2) -> Self {
+        let payload = msg.payload();
         let src_id = msg.source_id();
-        let sender_uuid = Uuid::from_u128_le(((msg.register_at(2) as u128) << 64) | (msg.register_at(1) as u128));
-        let receiver_uuid = Uuid::from_u128_le(((msg.register_at(4) as u128) << 64) | (msg.register_at(3) as u128));
-        let msg_info = MessageInfo::from_raw(msg.register_at(5));
-        let count = (msg.register_at(6) & 0x1ff).min(7) as u8; // Count is lower 9 bits
+        let sender_uuid =
+            Uuid::from_u128_le(((payload.register_at(2) as u128) << 64) | (payload.register_at(1) as u128));
+        let receiver_uuid =
+            Uuid::from_u128_le(((payload.register_at(4) as u128) << 64) | (payload.register_at(3) as u128));
+        let msg_info = MessageInfo::from_raw(payload.register_at(5));
+        let count = (payload.register_at(6) & 0x1ff).min(7) as u8; // Count is lower 9 bits
         let mut notifications = [(0, 0, NotifyType::Global); 7];
         for (i, notif) in notifications.iter_mut().enumerate().take(count as usize) {
-            *notif = NotifyReq::extract_tuple(msg.register_at(7 + i));
+            *notif = NotifyReq::extract_tuple(payload.register_at(7 + i));
         }
 
         NotifyReq {
@@ -91,13 +94,13 @@ impl From<MsgSendDirectReq2> for NotifyReq {
     }
 }
 
-impl From<NfyGenericRsp> for RegisterPayload {
+impl From<NfyGenericRsp> for DirectMessagePayload {
     fn from(value: NfyGenericRsp) -> Self {
-        RegisterPayload::from_iter(value.status.to_le_bytes())
+        DirectMessagePayload::from_iter(value.status.to_le_bytes())
     }
 }
 
-impl From<NfySetupRsp> for RegisterPayload {
+impl From<NfySetupRsp> for DirectMessagePayload {
     fn from(rsp: NfySetupRsp) -> Self {
         //
         // x4-x17 are for payload (14 registers)
@@ -112,7 +115,7 @@ impl From<NfySetupRsp> for RegisterPayload {
         ];
 
         let payload_bytes_iter = payload_regs.iter().flat_map(|&reg| u64::to_le_bytes(reg).into_iter());
-        RegisterPayload::from_iter(payload_bytes_iter)
+        DirectMessagePayload::from_iter(payload_bytes_iter)
     }
 }
 
@@ -425,24 +428,17 @@ impl Notify {
     }
 }
 
-const UUID: Uuid = uuid!("e474d87e-5731-4044-a727-cb3e8cf3c8df");
-
 impl Service for Notify {
-    fn service_name(&self) -> &'static str {
-        "Notify"
-    }
-
-    fn service_uuid(&self) -> Uuid {
-        UUID
-    }
+    const UUID: Uuid = uuid!("e474d87e-5731-4044-a727-cb3e8cf3c8df");
+    const NAME: &'static str = "Notify";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let req: NotifyReq = msg.clone().into();
         debug!("Received notify command: {:?}", req.msg_info.message_id());
 
         let payload = match req.msg_info.message_id() {
-            MessageID::Setup => RegisterPayload::from(self.nfy_setup(req)),
-            MessageID::Destroy => RegisterPayload::from(self.nfy_destroy(req)),
+            MessageID::Setup => DirectMessagePayload::from(self.nfy_setup(req)),
+            MessageID::Destroy => DirectMessagePayload::from(self.nfy_destroy(req)),
             MessageID::Add | MessageID::Remove | MessageID::Assign | MessageID::Unassign => {
                 // For Add, Remove, Assign, and Unassign, we just return unsupported
                 NfyGenericRsp {
