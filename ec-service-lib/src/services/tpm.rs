@@ -90,28 +90,34 @@ impl PtpCrbInterfaceIdentifier {
 // ---------------------------------------------------------------------------
 // TPM Service Function IDs
 // ---------------------------------------------------------------------------
-pub const TPM2_FFA_GET_INTERFACE_VERSION: u64 = 0x0f00_0001;
-pub const TPM2_FFA_GET_FEATURE_INFO: u64 = 0x0f00_0101;
-pub const TPM2_FFA_START: u64 = 0x0f00_0201;
-pub const TPM2_FFA_REGISTER_FOR_NOTIFICATION: u64 = 0x0f00_0301;
-pub const TPM2_FFA_UNREGISTER_FROM_NOTIFICATION: u64 = 0x0f00_0401;
-pub const TPM2_FFA_FINISH_NOTIFIED: u64 = 0x0f00_0501;
-pub const TPM2_FFA_MANAGE_LOCALITY: u64 = 0x1f00_0001;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum TpmFunction {
+    GetInterfaceVersion = 0x0f00_0001,
+    GetFeatureInfo = 0x0f00_0101,
+    Start = 0x0f00_0201,
+    RegisterForNotification = 0x0f00_0301,
+    UnregisterForNotification = 0x0f00_0401,
+    FinishNotified = 0x0f00_0501,
+    ManageLocality = 0x1f00_0001,
+}
 
 // ---------------------------------------------------------------------------
 // TPM Service Status Codes
 // ---------------------------------------------------------------------------
-pub type TpmStatus = u64;
-
-pub const TPM2_FFA_SUCCESS_OK: TpmStatus = 0x0500_0001;
-pub const TPM2_FFA_SUCCESS_OK_RESULTS_RETURNED: TpmStatus = 0x0500_0002;
-pub const TPM2_FFA_ERROR_NOFUNC: TpmStatus = 0x8e00_0001;
-pub const TPM2_FFA_ERROR_NOTSUP: TpmStatus = 0x8e00_0002;
-pub const TPM2_FFA_ERROR_INVARG: TpmStatus = 0x8e00_0005;
-pub const TPM2_FFA_ERROR_INV_CRB_CTRL_DATA: TpmStatus = 0x8e00_0006;
-pub const TPM2_FFA_ERROR_ALREADY: TpmStatus = 0x8e00_0009;
-pub const TPM2_FFA_ERROR_DENIED: TpmStatus = 0x8e00_000a;
-pub const TPM2_FFA_ERROR_NOMEM: TpmStatus = 0x8e00_000b;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum TpmStatus {
+    Ok = 0x0500_0001,
+    OkResultsReturned = 0x0500_0002,
+    NoFunc = 0x8e00_0001,
+    NotSup = 0x8e00_0002,
+    InvArg = 0x8e00_0005,
+    InvCrbCtrlData = 0x8e00_0006,
+    Already = 0x8e00_0009,
+    Denied = 0x8e00_000a,
+    NoMem = 0x8e00_000b,
+}
 
 // ---------------------------------------------------------------------------
 // TPM Service Start Qualifiers / Manage Locality Operations
@@ -223,10 +229,10 @@ impl<S: TpmSstOps> TpmService<S> {
     // Converts an [`ErrorCode`] to a [`TpmStatus`].
     fn convert_error_to_status(status: ErrorCode) -> TpmStatus {
         match status {
-            ErrorCode::Ok => TPM2_FFA_SUCCESS_OK,
-            ErrorCode::Denied => TPM2_FFA_ERROR_DENIED,
-            ErrorCode::NoMemory => TPM2_FFA_ERROR_NOMEM,
-            _ => TPM2_FFA_ERROR_DENIED,
+            ErrorCode::Ok => TpmStatus::Ok,
+            ErrorCode::Denied => TpmStatus::Denied,
+            ErrorCode::NoMemory => TpmStatus::NoMem,
+            _ => TpmStatus::Denied,
         }
     }
 
@@ -432,7 +438,7 @@ impl<S: TpmSstOps> TpmService<S> {
             // Make sure the locality being relinquished is the active locality.
             if locality != self.active_locality {
                 error!("Locality Relinquish Failed - Invalid Locality");
-                return TPM2_FFA_ERROR_DENIED;
+                return TpmStatus::Denied;
             }
 
             info!("Handle TPM Locality{:X} Relinquish", locality);
@@ -443,7 +449,7 @@ impl<S: TpmSstOps> TpmService<S> {
             // Make sure there is no active locality if requesting a different locality.
             if self.active_locality != NO_ACTIVE_LOCALITY && self.active_locality != locality {
                 error!("Locality Request Failed - Locality Not Relinquished");
-                return TPM2_FFA_ERROR_DENIED;
+                return TpmStatus::Denied;
             }
 
             info!("Handle TPM Locality{:X} Request", locality);
@@ -452,7 +458,7 @@ impl<S: TpmSstOps> TpmService<S> {
         // Otherwise, the host didn't set the correct bits, invalid.
         } else {
             error!("Request/Relinquish Bit Not Set");
-            return TPM2_FFA_ERROR_DENIED;
+            return TpmStatus::Denied;
         }
 
         // Update the internal TPM CRB.
@@ -469,12 +475,12 @@ impl<S: TpmSstOps> TpmService<S> {
     // Specification Functions
     fn get_interface_version_handler(&self, _request: &TpmRequest, response: &mut TpmResponse) -> TpmStatus {
         response.tpm_payload = (TPM_MAJOR_VER << 16) | TPM_MINOR_VER;
-        TPM2_FFA_SUCCESS_OK_RESULTS_RETURNED
+        TpmStatus::OkResultsReturned
     }
 
     fn get_feature_info_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         error!("Unsupported Function");
-        TPM2_FFA_ERROR_NOTSUP
+        TpmStatus::NotSup
     }
 
     // SAFETY: Function invokes both handle_command and handle_locality_request which can
@@ -488,22 +494,22 @@ impl<S: TpmSstOps> TpmService<S> {
 
         if locality >= NUM_LOCALITIES {
             error!("Invalid Locality");
-            return_val = TPM2_FFA_ERROR_INVARG;
+            return_val = TpmStatus::InvArg;
         } else if self.locality_states[locality as usize] == TpmLocalityState::Closed {
             error!("Locality Closed");
-            return_val = TPM2_FFA_ERROR_DENIED;
+            return_val = TpmStatus::Denied;
         } else if function == TPM2_FFA_START_FUNC_QUALIFIER_COMMAND {
             if locality == self.active_locality {
                 return_val = self.handle_command();
             } else {
                 error!("Locality Mismatch");
-                return_val = TPM2_FFA_ERROR_INVARG;
+                return_val = TpmStatus::InvArg;
             }
         } else if function == TPM2_FFA_START_FUNC_QUALIFIER_LOCALITY {
             return_val = self.handle_locality_request(locality);
         } else {
             error!("Invalid Start Function");
-            return_val = TPM2_FFA_ERROR_INVARG;
+            return_val = TpmStatus::InvArg;
         }
 
         // Clean up the internal CRB.
@@ -513,27 +519,27 @@ impl<S: TpmSstOps> TpmService<S> {
 
     fn register_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         error!("Unsupported Function");
-        TPM2_FFA_ERROR_NOTSUP
+        TpmStatus::NotSup
     }
 
     fn unregister_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         error!("Unsupported Function");
-        TPM2_FFA_ERROR_NOTSUP
+        TpmStatus::NotSup
     }
 
     fn finish_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         error!("Unsupported Function");
-        TPM2_FFA_ERROR_NOTSUP
+        TpmStatus::NotSup
     }
 
     fn manage_locality_handler(&mut self, request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         let locality_operation = request.function as u16;
         let locality = request.locality as u8;
-        let mut return_val: TpmStatus = TPM2_FFA_SUCCESS_OK;
+        let mut return_val: TpmStatus = TpmStatus::Ok;
 
         if locality >= NUM_LOCALITIES {
             error!("Invalid Locality");
-            return TPM2_FFA_ERROR_INVARG;
+            return TpmStatus::InvArg;
         }
 
         if locality_operation == TPM2_FFA_MANAGE_LOCALITY_OPEN {
@@ -544,7 +550,7 @@ impl<S: TpmSstOps> TpmService<S> {
             self.locality_states[locality as usize] = TpmLocalityState::Closed;
         } else {
             error!("Invalid Manage Locality Operation");
-            return_val = TPM2_FFA_ERROR_INVARG;
+            return_val = TpmStatus::InvArg;
         }
 
         return_val
@@ -596,30 +602,42 @@ impl<S: TpmSstOps> Service for TpmService<S> {
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let req_payload: TpmRequest = msg.clone().into();
         let mut resp_payload: TpmResponse = TpmResponse {
-            tpm_status: (TPM2_FFA_SUCCESS_OK),
+            tpm_status: (TpmStatus::Ok as u64),
             tpm_payload: (0),
         };
 
         resp_payload.tpm_status = match req_payload.opcode {
-            TPM2_FFA_GET_INTERFACE_VERSION => self.get_interface_version_handler(&req_payload, &mut resp_payload),
-            TPM2_FFA_GET_FEATURE_INFO => self.get_feature_info_handler(&req_payload, &mut resp_payload),
-            TPM2_FFA_START => unsafe { self.start_handler(&req_payload, &mut resp_payload) },
-            TPM2_FFA_REGISTER_FOR_NOTIFICATION => self.register_handler(&req_payload, &mut resp_payload),
-            TPM2_FFA_UNREGISTER_FROM_NOTIFICATION => self.unregister_handler(&req_payload, &mut resp_payload),
-            TPM2_FFA_FINISH_NOTIFIED => self.finish_handler(&req_payload, &mut resp_payload),
-            TPM2_FFA_MANAGE_LOCALITY => {
+            opcode if opcode == TpmFunction::GetInterfaceVersion as u64 => {
+                self.get_interface_version_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::GetFeatureInfo as u64 => {
+                self.get_feature_info_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::Start as u64 => unsafe {
+                self.start_handler(&req_payload, &mut resp_payload) as u64
+            },
+            opcode if opcode == TpmFunction::RegisterForNotification as u64 => {
+                self.register_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::UnregisterForNotification as u64 => {
+                self.unregister_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::FinishNotified as u64 => {
+                self.finish_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::ManageLocality as u64 => {
                 // Only allow from a logical SP owned by TF-A (source_id high byte == 0xFF).
                 // NOTE: This should really be msg.source_id()
                 if (msg.destination_id() & 0xFF00) != 0xFF00 {
                     error!("Invalid Source ID: {:X}", msg.destination_id());
-                    TPM2_FFA_ERROR_DENIED
+                    TpmStatus::Denied as u64
                 } else {
-                    self.manage_locality_handler(&req_payload, &mut resp_payload)
+                    self.manage_locality_handler(&req_payload, &mut resp_payload) as u64
                 }
             }
             _ => {
                 error!("Invalid TPM Service Opcode");
-                TPM2_FFA_ERROR_NOFUNC
+                TpmStatus::NoFunc as u64
             }
         };
 
