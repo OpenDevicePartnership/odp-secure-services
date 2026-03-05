@@ -41,10 +41,10 @@ uuid = { version = "1.0", default-features = false, features = ["v1"] }
 rstest = "0.26.1"
 
 [workspace.lints.clippy]
-suspicious = "forbid"
-correctness = "forbid"
-perf = "forbid"
-style = "forbid"
+suspicious = "deny"
+correctness = "deny"
+perf = "deny"
+style = "deny"
 
 
 [profile.release]
