@@ -1,7 +1,7 @@
 use crate::{Result, Service};
 use log::{debug, error};
+use odp_ffa::{DirectMessagePayload, HasRegisterPayload, MemRetrieveReq, MsgSendDirectReq2, MsgSendDirectResp2};
 use odp_ffa::{Function, NotificationSet};
-use odp_ffa::{MemRetrieveReq, MsgSendDirectReq2, MsgSendDirectResp2, Payload, RegisterPayload};
 use uuid::{uuid, Uuid};
 
 // Protocol CMD definitions for FwMgmt
@@ -19,7 +19,7 @@ struct FwStateRsp {
     boot_status: u8,
 }
 
-impl From<FwStateRsp> for RegisterPayload {
+impl From<FwStateRsp> for DirectMessagePayload {
     fn from(rsp: FwStateRsp) -> Self {
         let iter = rsp
             .fw_version
@@ -28,7 +28,7 @@ impl From<FwStateRsp> for RegisterPayload {
             .chain(rsp.secure_state.to_le_bytes())
             .chain(rsp.boot_status.to_le_bytes());
 
-        RegisterPayload::from_iter(iter)
+        DirectMessagePayload::from_iter(iter)
     }
 }
 
@@ -43,7 +43,7 @@ struct ServiceListRsp {
     key_mask: u16,
 }
 
-impl From<ServiceListRsp> for RegisterPayload {
+impl From<ServiceListRsp> for DirectMessagePayload {
     fn from(rsp: ServiceListRsp) -> Self {
         let iter = rsp
             .status
@@ -55,7 +55,7 @@ impl From<ServiceListRsp> for RegisterPayload {
             .chain(rsp.thermal_mask.to_le_bytes())
             .chain(rsp.hid_mask.to_le_bytes())
             .chain(rsp.key_mask.to_le_bytes());
-        RegisterPayload::from_iter(iter)
+        DirectMessagePayload::from_iter(iter)
     }
 }
 
@@ -65,10 +65,10 @@ struct GetBidRsp {
     _bid: u64,
 }
 
-impl From<GetBidRsp> for RegisterPayload {
+impl From<GetBidRsp> for DirectMessagePayload {
     fn from(rsp: GetBidRsp) -> Self {
         let iter = rsp._status.to_le_bytes().into_iter().chain(rsp._bid.to_le_bytes());
-        RegisterPayload::from_iter(iter)
+        DirectMessagePayload::from_iter(iter)
     }
 }
 
@@ -77,10 +77,10 @@ struct GenericRsp {
     _status: i64,
 }
 
-impl From<GenericRsp> for RegisterPayload {
+impl From<GenericRsp> for DirectMessagePayload {
     fn from(rsp: GenericRsp) -> Self {
         let iter = rsp._status.to_le_bytes().into_iter();
-        RegisterPayload::from_iter(iter)
+        DirectMessagePayload::from_iter(iter)
     }
 }
 
@@ -174,34 +174,27 @@ impl FwMgmt {
     }
 }
 
-const UUID: Uuid = uuid!("330c1273-fde5-4757-9819-5b6539037502");
-
 impl Service for FwMgmt {
-    fn service_name(&self) -> &'static str {
-        "FwMgmt"
-    }
-
-    fn service_uuid(&self) -> Uuid {
-        UUID
-    }
+    const UUID: Uuid = uuid!("330c1273-fde5-4757-9819-5b6539037502");
+    const NAME: &'static str = "FwMgmt";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
-        let cmd = msg.u8_at(0);
+        let cmd = msg.payload().u8_at(0);
         debug!("Received FwMgmt command 0x{:x}", cmd);
 
         let payload = match cmd {
-            EC_CAP_INDIRECT_MSG => RegisterPayload::from(self.process_indirect(
-                msg.u8_at(1) as u16,
-                msg.register_at(4),
-                msg.register_at(5),
+            EC_CAP_INDIRECT_MSG => DirectMessagePayload::from(self.process_indirect(
+                msg.payload().u8_at(1) as u16,
+                msg.payload().register_at(4),
+                msg.payload().register_at(5),
             )),
-            EC_CAP_GET_FW_STATE => RegisterPayload::from(self.get_fw_state()),
-            EC_CAP_GET_SVC_LIST => RegisterPayload::from(self.get_svc_list()),
-            EC_CAP_GET_BID => RegisterPayload::from(self.get_bid()),
-            EC_CAP_TEST_NFY => RegisterPayload::from(self.test_notify(msg.clone())),
+            EC_CAP_GET_FW_STATE => DirectMessagePayload::from(self.get_fw_state()),
+            EC_CAP_GET_SVC_LIST => DirectMessagePayload::from(self.get_svc_list()),
+            EC_CAP_GET_BID => DirectMessagePayload::from(self.get_bid()),
+            EC_CAP_TEST_NFY => DirectMessagePayload::from(self.test_notify(msg.clone())),
             EC_CAP_MAP_SHARE => {
                 // First parameter is pointer to memory descriptor
-                RegisterPayload::from(self.map_share(msg.register_at(1), msg.register_at(2)))
+                DirectMessagePayload::from(self.map_share(msg.payload().register_at(1), msg.payload().register_at(2)))
             }
             _ => {
                 error!("Unknown FwMgmt Command: {}", cmd);

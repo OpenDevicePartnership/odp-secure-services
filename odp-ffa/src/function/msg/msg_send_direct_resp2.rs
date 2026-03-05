@@ -14,7 +14,7 @@ impl Function for MsgSendDirectResp2 {
 }
 
 impl MsgSendDirectResp2 {
-    pub fn new(source_id: u16, destination_id: u16, uuid: Uuid, data: impl Into<RegisterPayload>) -> Self {
+    pub fn new(source_id: u16, destination_id: u16, uuid: Uuid, data: impl Into<DirectMessagePayload>) -> Self {
         Self(DirectMessage {
             source_id,
             destination_id,
@@ -23,7 +23,7 @@ impl MsgSendDirectResp2 {
         })
     }
 
-    pub fn from_req_with_payload(req: &MsgSendDirectReq2, payload: impl Into<RegisterPayload>) -> Self {
+    pub fn from_req_with_payload(req: &MsgSendDirectReq2, payload: impl Into<DirectMessagePayload>) -> Self {
         Self(DirectMessage {
             source_id: req.0.destination_id,
             destination_id: req.0.source_id,
@@ -46,7 +46,7 @@ impl MsgSendDirectResp2 {
 }
 
 impl HasRegisterPayload for MsgSendDirectResp2 {
-    fn payload(&self) -> &RegisterPayload {
+    fn payload(&self) -> &DirectMessagePayload {
         &self.0.payload
     }
 }
@@ -70,7 +70,7 @@ impl TryFrom<SmcParams> for MsgSendDirectResp2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::function::msg::RegisterPayload; // Explicit import
+    use crate::function::msg::DirectMessagePayload; // Explicit import
     use rstest::rstest;
     use uuid::uuid; // Required for uuid! macro // Explicit import
 
@@ -78,13 +78,13 @@ mod tests {
     #[case::sample_resp(
         30, 40,
         uuid!("789a123b-c45d-6789-e012-345f678901ab"),
-        RegisterPayload::from_iter((112..224).map(|i| i as u8))
+        DirectMessagePayload::from_iter((112..224).map(|i| i as u8))
     )]
     fn test_msg_send_direct_resp2_round_trip(
         #[case] source_id: u16,
         #[case] destination_id: u16,
         #[case] uuid: Uuid,
-        #[case] payload: RegisterPayload,
+        #[case] payload: DirectMessagePayload,
     ) {
         let original_resp = MsgSendDirectResp2::new(source_id, destination_id, uuid, payload.clone());
 

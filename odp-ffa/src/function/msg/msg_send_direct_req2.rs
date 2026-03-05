@@ -5,7 +5,7 @@ use uuid::Uuid;
 pub struct MsgSendDirectReq2(pub(crate) DirectMessage);
 
 impl MsgSendDirectReq2 {
-    pub fn new(source_id: u16, destination_id: u16, uuid: Uuid, payload: impl Into<RegisterPayload>) -> Self {
+    pub fn new(source_id: u16, destination_id: u16, uuid: Uuid, payload: impl Into<DirectMessagePayload>) -> Self {
         Self(DirectMessage {
             source_id,
             destination_id,
@@ -28,7 +28,7 @@ impl MsgSendDirectReq2 {
 }
 
 impl HasRegisterPayload for MsgSendDirectReq2 {
-    fn payload(&self) -> &RegisterPayload {
+    fn payload(&self) -> &DirectMessagePayload {
         &self.0.payload
     }
 }
@@ -61,7 +61,7 @@ impl TryFrom<SmcParams> for MsgSendDirectReq2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::function::msg::RegisterPayload;
+    use crate::function::msg::DirectMessagePayload;
     use rstest::rstest;
     use uuid::uuid; // Required for uuid! macro // Explicit import for RegisterPayload
 
@@ -69,13 +69,13 @@ mod tests {
     #[case::sample_req(
         10, 20,
         uuid!("123e4567-e89b-12d3-a456-426614174000"),
-        RegisterPayload::from_iter((0..112).map(|i| i as u8))
+        DirectMessagePayload::from_iter((0..112).map(|i| i as u8))
     )]
     fn test_msg_send_direct_req2_round_trip(
         #[case] source_id: u16,
         #[case] destination_id: u16,
         #[case] uuid: Uuid,
-        #[case] payload: RegisterPayload,
+        #[case] payload: DirectMessagePayload,
     ) {
         let original_req = MsgSendDirectReq2::new(source_id, destination_id, uuid, payload.clone());
 

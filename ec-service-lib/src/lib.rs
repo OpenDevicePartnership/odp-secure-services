@@ -1,12 +1,16 @@
 #![no_std]
 
+pub mod message_handler;
 mod service;
 pub mod services;
-pub mod sp_logger;
+mod sp_logger;
 
 use log::{debug, error, info};
+pub use message_handler::MessageHandler;
 use odp_ffa::{Function, MsgSendDirectReq2, MsgSendDirectResp2, MsgWait, RxTxMap, TryFromSmcCall};
-pub use service::{Result, Service, ServiceNode, ServiceNodeHandler, ServiceNodeNone};
+pub use service::Service;
+pub use sp_logger::SpLogger;
+pub type Result<T> = core::result::Result<T, odp_ffa::Error>;
 
 // For reference, here are the UUIDs for services that ec-service-lib defines (not all of them are implemented)
 // const UUID_EC_SVC_NOTIFY: Uuid = uuid!("B510B3A3-59F6-4054-BA7A-FF2EB1EAC765");

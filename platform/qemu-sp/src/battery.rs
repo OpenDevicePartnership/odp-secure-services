@@ -1,6 +1,6 @@
 use ec_service_lib::{Result, Service};
 use log::{debug, error};
-use odp_ffa::{MsgSendDirectReq2, MsgSendDirectResp2, Payload, RegisterPayload};
+use odp_ffa::{DirectMessagePayload, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
 use uuid::{uuid, Uuid};
 
 // Protocol CMD definitions for Battery
@@ -25,9 +25,9 @@ struct GenericRsp {
     status: i64,
 }
 
-impl From<GenericRsp> for RegisterPayload {
+impl From<GenericRsp> for DirectMessagePayload {
     fn from(value: GenericRsp) -> Self {
-        RegisterPayload::from_iter(value.status.to_le_bytes())
+        DirectMessagePayload::from_iter(value.status.to_le_bytes())
     }
 }
 
@@ -39,10 +39,21 @@ struct BstRsp {
     present_volt: u32,
 }
 
-impl From<BstRsp> for RegisterPayload {
+impl From<BstRsp> for DirectMessagePayload {
     fn from(value: BstRsp) -> Self {
         let payload_regs = [value.state, value.present_rate, value.remaining_cap, value.present_volt];
-        RegisterPayload::from_iter(payload_regs.iter().flat_map(|&reg| u32::to_le_bytes(reg).into_iter()))
+        DirectMessagePayload::from_iter(payload_regs.iter().flat_map(|&reg| u32::to_le_bytes(reg).into_iter()))
+    }
+}
+
+impl From<&DirectMessagePayload> for BstRsp {
+    fn from(payload: &DirectMessagePayload) -> Self {
+        BstRsp {
+            state: payload.u32_at(0),
+            present_rate: payload.u32_at(4),
+            remaining_cap: payload.u32_at(8),
+            present_volt: payload.u32_at(12),
+        }
     }
 }
 
@@ -68,37 +79,30 @@ impl Battery {
     }
 }
 
-const UUID: Uuid = uuid!("25cb5207-ac36-427d-aaef-3aa78877d27e");
-
 impl Service for Battery {
-    fn service_name(&self) -> &'static str {
-        "Battery"
-    }
-
-    fn service_uuid(&self) -> Uuid {
-        UUID
-    }
+    const UUID: Uuid = uuid!("25cb5207-ac36-427d-aaef-3aa78877d27e");
+    const NAME: &'static str = "Battery";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
-        let cmd = msg.u8_at(0);
+        let cmd = msg.payload().u8_at(0);
         debug!("Received Battery command 0x{:x}", cmd);
 
         let payload = match cmd {
-            EC_BAT_GET_BIX => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BST => RegisterPayload::from(self.get_bst(&msg)),
-            EC_BAT_GET_PSR => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_PIF => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPS => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BTP => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPT => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPC => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMC => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMD => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BCT => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BTM => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMS => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMA => RegisterPayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_STA => RegisterPayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BIX => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BST => DirectMessagePayload::from(self.get_bst(&msg)),
+            EC_BAT_GET_PSR => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_PIF => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BPS => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BTP => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BPT => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BPC => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BMC => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BMD => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BCT => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BTM => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BMS => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BMA => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_STA => DirectMessagePayload::from(self.generic_test(&msg)),
             _ => {
                 error!("Unknown Battery Command: {}", cmd);
                 return Err(odp_ffa::Error::Other("Unknown Battery Command"));
@@ -112,17 +116,23 @@ impl Service for Battery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use odp_ffa::HasRegisterPayload;
 
     #[test]
-    fn battery_new_returns_default() {
-        let bat = Battery::new();
-        assert_eq!(bat.service_name(), "Battery");
-    }
-
-    #[test]
-    fn battery_service_uuid_is_ec_battery() {
-        let bat = Battery::new();
-        let expected = uuid!("25cb5207-ac36-427d-aaef-3aa78877d27e");
-        assert_eq!(bat.service_uuid(), expected);
+    fn battery_get_bst_works() {
+        let mut bat = Battery::new();
+        let msg = MsgSendDirectReq2::new(
+            0,
+            0,
+            Battery::UUID,
+            DirectMessagePayload::from_iter(vec![EC_BAT_GET_BST]),
+        );
+        let resp = bat.ffa_msg_send_direct_req2(msg).unwrap();
+        let payload = resp.payload();
+        let bst = BstRsp::from(payload);
+        assert_eq!(bst.state, 0x1);
+        assert_eq!(bst.present_rate, 500);
+        assert_eq!(bst.remaining_cap, 5000);
+        assert_eq!(bst.present_volt, 12000);
     }
 }
