@@ -13,7 +13,8 @@
 
 use crate::{Result, Service};
 use log::{error, info};
-use odp_ffa::{ErrorCode, MsgSendDirectReq2, MsgSendDirectResp2, Payload, RegisterPayload};
+use odp_ffa::HasRegisterPayload;
+use odp_ffa::{DirectMessagePayload, ErrorCode, MsgSendDirectReq2, MsgSendDirectResp2};
 use uuid::{uuid, Uuid};
 
 use core::mem;
@@ -189,9 +190,10 @@ struct TpmResponse {
 
 impl From<MsgSendDirectReq2> for TpmRequest {
     fn from(msg: MsgSendDirectReq2) -> Self {
-        let opcode = msg.register_at(0); // Arg0, x4
-        let function = msg.register_at(1); // Arg1, x5
-        let locality = msg.register_at(2); // Arg2, x6
+        let payload = msg.payload();
+        let opcode = payload.register_at(0); // Arg0, x4
+        let function = payload.register_at(1); // Arg1, x5
+        let locality = payload.register_at(2); // Arg2, x6
 
         TpmRequest {
             opcode,
@@ -201,12 +203,12 @@ impl From<MsgSendDirectReq2> for TpmRequest {
     }
 }
 
-impl From<TpmResponse> for RegisterPayload {
+impl From<TpmResponse> for DirectMessagePayload {
     fn from(resp: TpmResponse) -> Self {
         // x4-x17 are for payload (14 registers)
         let payload_regs = [resp.tpm_status, resp.tpm_payload];
         let payload_bytes_iter = payload_regs.iter().flat_map(|&reg| u64::to_le_bytes(reg).into_iter());
-        RegisterPayload::from_iter(payload_bytes_iter)
+        DirectMessagePayload::from_iter(payload_bytes_iter)
     }
 }
 
@@ -609,16 +611,9 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 }
 
-pub const TPM_SERVICE_UUID: Uuid = uuid!("17b862a4-1806-4faf-86b3-089a58353861");
-
 impl<S: TpmSstOps> Service for TpmService<S> {
-    fn service_name(&self) -> &'static str {
-        "Tpm"
-    }
-
-    fn service_uuid(&self) -> Uuid {
-        TPM_SERVICE_UUID
-    }
+    const UUID: Uuid = uuid!("17b862a4-1806-4faf-86b3-089a58353861");
+    const NAME: &'static str = "Tpm";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let req_payload: TpmRequest = msg.clone().into();
@@ -662,7 +657,7 @@ impl<S: TpmSstOps> Service for TpmService<S> {
             }
         };
 
-        let payload: RegisterPayload = RegisterPayload::from(resp_payload);
+        let payload = DirectMessagePayload::from(resp_payload);
         Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
     }
 }
@@ -677,7 +672,9 @@ mod tests {
 
     use super::*;
     use alloc::boxed::Box;
-    use odp_ffa::Payload;
+    use odp_ffa::DirectMessagePayload;
+
+    const TPM_SERVICE_UUID: Uuid = uuid!("17b862a4-1806-4faf-86b3-089a58353861");
 
     // =======================================================================
     // Mock CrbRegion
@@ -731,18 +728,20 @@ mod tests {
     fn direct_req2_msg(source: u16, dest: u16, opcode: u64, function: u64, locality: u64) -> MsgSendDirectReq2 {
         let regs = [opcode, function, locality];
         let payload_bytes_iter = regs.iter().flat_map(|&r| u64::to_le_bytes(r).into_iter());
-        let payload = RegisterPayload::from_iter(payload_bytes_iter);
+        let payload = DirectMessagePayload::from_iter(payload_bytes_iter);
         MsgSendDirectReq2::new(source, dest, TPM_SERVICE_UUID, payload)
     }
 
     // Extract the status from the response.
     fn resp_status(resp: &MsgSendDirectResp2) -> u64 {
-        resp.register_at(0) // Arg0, x4
+        let payload = resp.payload();
+        payload.register_at(0) // Arg0, x4
     }
 
     // Extract the payload from the response.
     fn resp_payload(resp: &MsgSendDirectResp2) -> u64 {
-        resp.register_at(1) // Arg1, x5
+        let payload = resp.payload();
+        payload.register_at(1) // Arg1, x5
     }
 
     // Allocates a properly-sized and aligned CRB region.
@@ -919,21 +918,6 @@ mod tests {
             TpmService::<MockTpmSst>::convert_error_to_status(ErrorCode::NotReady),
             TpmStatus::Denied,
         );
-    }
-
-    // =======================================================================
-    // Service Traits: service_name / service_uuid
-    // =======================================================================
-    #[test]
-    fn test_service_name() {
-        let service = TpmService::new(MockTpmSst::new());
-        assert_eq!(service.service_name(), "Tpm");
-    }
-
-    #[test]
-    fn test_service_uuid() {
-        let service = TpmService::new(MockTpmSst::new());
-        assert_eq!(service.service_uuid(), TPM_SERVICE_UUID);
     }
 
     // =======================================================================
