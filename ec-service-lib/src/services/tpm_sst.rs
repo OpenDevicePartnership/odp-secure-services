@@ -14,8 +14,6 @@ use odp_ffa::{ErrorCode, Function, Yield};
 // ---------------------------------------------------------------------------
 // TPM Service State Translation Defines
 // ---------------------------------------------------------------------------
-pub const TPM_LOCALITY_OFFSET: u64 = 0x1000;
-
 const INTERFACE_TYPE_MASK: u32 = 0x00F;
 const IDLE_BYPASS_MASK: u32 = 0x200;
 
@@ -75,7 +73,7 @@ pub const PTP_TIMEOUT_MAX: u64 = 90000 * 1000; // 90s
 // PTP CRB Registers
 // ---------------------------------------------------------------------------
 pub const CRB_DATA_BUFFER_SIZE: usize = 0xF80;
-#[repr(C)]
+#[repr(C, packed)]
 pub struct PtpCrbRegisters {
     pub locality_state: u32,                         // 0x00
     pub reserved1: [u8; 4],                          // 0x04
@@ -158,7 +156,7 @@ pub trait TpmSstOps {
 // ---------------------------------------------------------------------------
 pub struct TpmSst {
     is_crb_interface: bool,
-    is_idle_bypass_supported: bool,
+    pub is_idle_bypass_supported: bool,
     tpm_crb_address: u64,
 }
 
@@ -175,7 +173,7 @@ impl Default for TpmSst {
 impl TpmSst {
     // Creates an uninitialized `TpmSst`. Call [`TpmSstOps::init()`] before use. Init
     // will initialize the internal variables.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             is_crb_interface: false,
             is_idle_bypass_supported: false,
@@ -185,12 +183,14 @@ impl TpmSst {
 
     // Returns a raw pointer to the external CRB registers for the given locality.
     fn external_crb_ptr(&self, locality: u8) -> *mut PtpCrbRegisters {
-        (self.tpm_crb_address + ((locality as u64) * TPM_LOCALITY_OFFSET)) as *mut PtpCrbRegisters
+        (self.tpm_crb_address + ((locality as u64) * (core::mem::size_of::<PtpCrbRegisters>() as u64)))
+            as *mut PtpCrbRegisters
     }
 
     // Returns a raw pointer to the external FIFO registers for the given locality.
     fn external_fifo_ptr(&self, locality: u8) -> *mut PtpFifoRegisters {
-        (self.tpm_crb_address + ((locality as u64) * TPM_LOCALITY_OFFSET)) as *mut PtpFifoRegisters
+        (self.tpm_crb_address + ((locality as u64) * (core::mem::size_of::<PtpFifoRegisters>() as u64)))
+            as *mut PtpFifoRegisters
     }
 
     // Temp function to busy loop before checking register contents.
@@ -416,7 +416,7 @@ impl TpmSst {
 }
 
 // ---------------------------------------------------------------------------
-// TpmSstOps trait implementation for TpmSst
+// TpmSstOps Implementation
 // ---------------------------------------------------------------------------
 impl TpmSstOps for TpmSst {
     // Initiates the transition to the Idle state.
@@ -656,11 +656,13 @@ impl TpmSstOps for TpmSst {
     // interface identifier register to determine the TPM interface type and
     // idle bypass support.
     fn init(&mut self, tpm_crb_address: u64) {
-        // Note that the register we are looking at is located at the same address
+        // Set the tpm CRB address.
+        self.tpm_crb_address = tpm_crb_address;
+
+        // Note that the register we are looking at are located at the same address
         // regardless of if the TPM type is FIFO or CRB.
         let external_crb = self.tpm_crb_address as *const PtpCrbRegisters;
 
-        // SAFETY:
         unsafe {
             // Need to determine the TPM interface type.
             let interface_id = ptr::read_volatile(ptr::addr_of!((*external_crb).interface_id) as *mut u32);
@@ -669,8 +671,423 @@ impl TpmSstOps for TpmSst {
             // Need to determine if idle bypass is supported.
             self.is_idle_bypass_supported = (interface_id & IDLE_BYPASS_MASK) != 0;
         }
-
-        // Set the tpm CRB address.
-        self.tpm_crb_address = tpm_crb_address;
     }
+}
+
+// ---------------------------------------------------------------------------
+// TPM SST Unit Tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    extern crate std;
+
+    use super::*;
+    use alloc::boxed::Box;
+    use core::mem;
+    use core::ptr;
+
+    // Number of localities in the CRB/FIFO
+    const NUM_LOCALITIES: u8 = 0x05;
+
+    // =======================================================================
+    // Mock CrbRegion
+    // =======================================================================
+    #[repr(C, align(8))]
+    struct CrbRegion {
+        data: [u8; (NUM_LOCALITIES as usize) * core::mem::size_of::<PtpCrbRegisters>()],
+    }
+
+    // =======================================================================
+    // Helpers
+    // =======================================================================
+    fn alloc_crb_region() -> (Box<CrbRegion>, u64) {
+        let region = unsafe {
+            let layout = std::alloc::Layout::new::<CrbRegion>();
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut CrbRegion;
+            assert!(!ptr.is_null(), "Allocation Failed");
+            Box::from_raw(ptr)
+        };
+        let addr = region.data.as_ptr() as u64;
+        (region, addr)
+    }
+
+    // ===================================================================
+    // TpmSst::new & TpmSst::default Test(s)
+    // ===================================================================
+    #[test]
+    fn test_tpm_sst_new_defaults() {
+        let sst = TpmSst::new();
+        assert!(!sst.is_crb_interface);
+        assert!(!sst.is_idle_bypass_supported);
+        assert_eq!(sst.tpm_crb_address, 0x60120000);
+    }
+
+    #[test]
+    fn test_tpm_sst_new_equals_default() {
+        let tpm_new = TpmSst::new();
+        let tpm_default = TpmSst::default();
+        assert_eq!(tpm_new.is_crb_interface, tpm_default.is_crb_interface);
+        assert_eq!(tpm_new.is_idle_bypass_supported, tpm_default.is_idle_bypass_supported);
+        assert_eq!(tpm_new.tpm_crb_address, tpm_default.tpm_crb_address);
+    }
+
+    // ===================================================================
+    // PtpCrbRegisters/PtpFifoRegisters Test(s)
+    // ===================================================================
+    #[test]
+    fn test_ptp_crb_registers_size() {
+        assert_eq!(mem::size_of::<PtpCrbRegisters>(), 0x1000);
+    }
+
+    #[test]
+    fn test_ptp_fifo_registers_size() {
+        assert_eq!(mem::size_of::<PtpFifoRegisters>(), 0x1000);
+    }
+
+    #[test]
+    fn test_ptp_crb_equals_ptp_fifo_size() {
+        assert_eq!(mem::size_of::<PtpCrbRegisters>(), mem::size_of::<PtpFifoRegisters>());
+    }
+
+    #[test]
+    fn test_crb_ptr_equals_fifo_ptr() {
+        let (buff, addr) = alloc_crb_region();
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert_eq!(sst.external_crb_ptr(0) as *mut u8, sst.external_fifo_ptr(0) as *mut u8);
+        assert_eq!(sst.external_crb_ptr(1) as *mut u8, sst.external_fifo_ptr(1) as *mut u8);
+        assert_eq!(sst.external_crb_ptr(2) as *mut u8, sst.external_fifo_ptr(2) as *mut u8);
+        assert_eq!(sst.external_crb_ptr(3) as *mut u8, sst.external_fifo_ptr(3) as *mut u8);
+        assert_eq!(sst.external_crb_ptr(4) as *mut u8, sst.external_fifo_ptr(4) as *mut u8);
+    }
+
+    // ===================================================================
+    // CRB/FIFO Interface Identifier Register Test(s)
+    // ===================================================================
+    #[test]
+    fn test_is_crb_interface_false() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x00 = FIFO)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x00);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(!sst.is_crb_interface);
+    }
+
+    #[test]
+    fn test_is_crb_interface_true() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+    }
+
+    #[test]
+    fn test_is_idle_bypass_supported_false() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // CapCRBIdleBypass (Bit 9)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x00);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(!sst.is_idle_bypass_supported);
+    }
+
+    #[test]
+    fn test_is_idle_bypass_supported_true() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // CapCRBIdleBypass (Bit 9)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x200);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_idle_bypass_supported);
+    }
+
+    // ===================================================================
+    // TpmSst copy_command_data Test(s)
+    // ===================================================================
+    // NOTE: There need to be FIFO versions of these tests. However, those are more
+    //       complicated as they require reading the burst_count/etc. which would
+    //       require mocking the hardware functionality.
+    #[test]
+    fn test_copy_command_data_crb() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let test_data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+            let status = sst.copy_command_data(0, &test_data, 4);
+            assert_eq!(status, ErrorCode::Ok);
+
+            let crb = sst.external_crb_ptr(0);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..4 {
+                let byte = ptr::read_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]));
+                assert_eq!(byte, test_data[i], "Byte Mismatch @ Index:{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_command_data_zero_length_crb() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let status = sst.copy_command_data(0, &[], 0);
+            assert_eq!(status, ErrorCode::Ok);
+        }
+    }
+
+    #[test]
+    fn test_copy_command_data_full_crb() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let mut test_data = [0u8; CRB_DATA_BUFFER_SIZE];
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..CRB_DATA_BUFFER_SIZE {
+                test_data[i] = (i & 0xFF) as u8;
+            }
+
+            let status = sst.copy_command_data(0, &test_data, CRB_DATA_BUFFER_SIZE as u32);
+            assert_eq!(status, ErrorCode::Ok);
+
+            let crb = sst.external_crb_ptr(0);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..CRB_DATA_BUFFER_SIZE {
+                let byte = ptr::read_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]));
+                assert_eq!(byte, test_data[i], "Byte Mismatch @ Index:{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_command_data_diff_loc_crb() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let test_data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+            let status = sst.copy_command_data(1, &test_data, 4);
+            assert_eq!(status, ErrorCode::Ok);
+
+            let crb = sst.external_crb_ptr(1);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..4 {
+                let byte = ptr::read_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]));
+                assert_eq!(byte, test_data[i], "Byte Mismatch @ Index:{i}");
+            }
+        }
+    }
+
+    // ===================================================================
+    // TpmSst copy_response_data Test(s)
+    // ===================================================================
+    // NOTE: There need to be FIFO versions of these tests. However, those are more
+    //       complicated as they require reading the burst_count/etc. which would
+    //       require mocking the hardware functionality.
+    #[test]
+    fn test_copy_response_data() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let test_data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+            let crb = sst.external_crb_ptr(0);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..4 {
+                ptr::write_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]) as *mut u8, test_data[i]);
+            }
+
+            let mut resp_data = [0u8; 4];
+            let status = sst.copy_response_data(0, &mut resp_data, 4);
+            assert_eq!(status, ErrorCode::Ok);
+
+            for i in 0..4 {
+                assert_eq!(resp_data[i], test_data[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_response_data_zero_length() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let status = sst.copy_response_data(0, &mut [], 0);
+            assert_eq!(status, ErrorCode::Ok);
+        }
+    }
+
+    #[test]
+    fn test_copy_response_data_full_crb() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let mut test_data = [0u8; CRB_DATA_BUFFER_SIZE];
+            let crb = sst.external_crb_ptr(0);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..CRB_DATA_BUFFER_SIZE {
+                test_data[i] = (i & 0xFF) as u8;
+                ptr::write_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]) as *mut u8, test_data[i]);
+            }
+
+            let mut resp_data = [0u8; CRB_DATA_BUFFER_SIZE];
+            let status = sst.copy_response_data(0, &mut resp_data, CRB_DATA_BUFFER_SIZE as u32);
+            assert_eq!(status, ErrorCode::Ok);
+            for i in 0..CRB_DATA_BUFFER_SIZE {
+                assert_eq!(resp_data[i], test_data[i], "Byte Mismatch @ Index:{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_response_data_diff_loc() {
+        let (buff, addr) = alloc_crb_region();
+
+        unsafe {
+            // NOTE: That this doesn't use the internal function as init has not been
+            //       called and as such the TPM address is not valid.
+            let crb = addr as *mut PtpCrbRegisters;
+            // InterfaceType (0x01 = CRB)
+            ptr::write_volatile(ptr::addr_of!((*crb).interface_id) as *mut u32, 0x01);
+        }
+
+        let mut sst = TpmSst::new();
+        sst.init(addr);
+        assert!(sst.is_crb_interface);
+
+        unsafe {
+            let test_data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+            let crb = sst.external_crb_ptr(1);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..4 {
+                ptr::write_volatile(ptr::addr_of!((*crb).crb_data_buffer[i]) as *mut u8, test_data[i]);
+            }
+
+            let mut resp_data = [0u8; 4];
+            let status = sst.copy_response_data(1, &mut resp_data, 4);
+            assert_eq!(status, ErrorCode::Ok);
+
+            for i in 0..4 {
+                assert_eq!(resp_data[i], test_data[i]);
+            }
+        }
+    }
+
+    // NOTE: There are many tests that are still required but are difficult to implement
+    //       as they require mocking MMIO hardware functionality. There are plans to
+    //       update the TPM SST to abstract the hardware portions. When that is complete
+    //       we can revisit the unit tests and add any/all that are missing.
 }

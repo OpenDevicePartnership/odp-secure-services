@@ -29,7 +29,7 @@ use super::tpm_sst::{
     PTP_CRB_LOCALITY_STATE_ACTIVE_LOCALITY_0, PTP_CRB_LOCALITY_STATE_ACTIVE_LOCALITY_1,
     PTP_CRB_LOCALITY_STATE_ACTIVE_LOCALITY_2, PTP_CRB_LOCALITY_STATE_ACTIVE_LOCALITY_3,
     PTP_CRB_LOCALITY_STATE_ACTIVE_LOCALITY_4, PTP_CRB_LOCALITY_STATE_LOCALITY_ASSIGNED,
-    PTP_CRB_LOCALITY_STATE_TPM_REG_VALID_STATUS, PTP_CRB_LOCALITY_STATUS_GRANTED, TPM_LOCALITY_OFFSET,
+    PTP_CRB_LOCALITY_STATE_TPM_REG_VALID_STATUS, PTP_CRB_LOCALITY_STATUS_GRANTED,
 };
 
 // ---------------------------------------------------------------------------
@@ -238,7 +238,8 @@ impl<S: TpmSstOps> TpmService<S> {
 
     // Returns a mutable pointer to the CRB register block for `locality`.
     fn crb_ptr(&self, locality: u8) -> *mut PtpCrbRegisters {
-        let addr = self.tpm_internal_crb_address + ((locality as u64) * TPM_LOCALITY_OFFSET);
+        let addr =
+            self.tpm_internal_crb_address + ((locality as u64) * (core::mem::size_of::<PtpCrbRegisters>() as u64));
         addr as *mut PtpCrbRegisters
     }
 
@@ -683,7 +684,7 @@ mod tests {
     // =======================================================================
     #[repr(C, align(8))]
     struct CrbRegion {
-        data: [u8; NUM_LOCALITIES as usize * TPM_LOCALITY_OFFSET as usize],
+        data: [u8; (NUM_LOCALITIES as usize) * core::mem::size_of::<PtpCrbRegisters>()],
     }
 
     // =======================================================================
@@ -848,10 +849,12 @@ mod tests {
         let service = TpmService::new(MockTpmSst::new());
         assert_eq!(service.current_state, TpmState::Idle);
         assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
+        assert_eq!(service.interface_id_default.0, 0);
         assert_eq!(
             service.locality_states,
             [TpmLocalityState::Closed; NUM_LOCALITIES as usize],
         );
+        assert_eq!(service.tpm_internal_crb_address, 0x10000200000);
     }
 
     // =======================================================================
