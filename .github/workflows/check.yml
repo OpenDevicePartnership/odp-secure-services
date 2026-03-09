@@ -21,6 +21,21 @@ concurrency:
   cancel-in-progress: true
 name: check
 jobs:
+  precommit:
+    runs-on: ubuntu-latest
+    name: stable / precommit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt clippy
+          targets: aarch64-unknown-none
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall cargo-deny@^0.19 -y --force --locked
+      - run: cargo binstall cargo-hack@^0.6 -y --force --locked
+      - run: .husky/pre-commit
+
   test:
     runs-on: ubuntu-latest
     name: stable / test
@@ -60,7 +75,7 @@ jobs:
       - name: cargo clippy
         uses: giraffate/clippy-action@v1
         with:
-          reporter: 'github-pr-check'
+          reporter: "github-pr-check"
           clippy_flags: --
           github_token: ${{ secrets.GITHUB_TOKEN }}
 

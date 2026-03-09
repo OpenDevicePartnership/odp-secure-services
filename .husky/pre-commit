@@ -2,9 +2,52 @@
 set -e
 PROJECT_DIR=$(git rev-parse --show-toplevel)
 cd "$PROJECT_DIR"
-cargo deny check
+
+check_cargo_subcommand() {
+    tool=$1
+    required_version=$2
+
+    if ! cargo binstall -V >/dev/null 2>&1; then
+      install_str="cargo install cargo-$tool@$required_version --force --locked"
+    else
+      install_str="cargo binstall cargo-$tool@$required_version -y --force --locked"
+    fi
+
+    if ! cargo "$tool" --version >/dev/null 2>&1; then
+        echo "cargo-$tool is not installed. Please install it with \`$install_str\`"
+        exit 1
+    fi
+
+    actual_version=$(cargo "$tool" --version | awk '{print $2}')
+    required_version_regex=$(echo "$required_version" | sed 's/\./\\./g')
+    if ! echo "$actual_version" | grep -E "$required_version_regex" >/dev/null 2>&1; then
+        echo "cargo-$tool $actual_version is installed, but $required_version is required."
+        echo "Please install it with \`$install_str\`"
+        exit 1
+    fi
+}
+
+check_rustup_target() {
+    target=$1
+    if ! rustup target list --installed | grep -qx "$target"; then
+        echo "Rust target '$target' is not installed."
+        echo "Please install it with: rustup target add $target"
+        exit 1
+    fi
+}
+
+check_cargo_subcommand "deny" "^0.19"
+check_cargo_subcommand "hack" "^0.6"
+check_rustup_target "aarch64-unknown-none"
+
+set -x
+
+# cargo deny --log-level=warn check
+cargo clippy --target=aarch64-unknown-none -p ihv1-ec-sp -p qemu-ec-sp
+cargo clippy
 cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test
+cargo hack check --feature-powerset --exclude=ihv1-ec-sp --exclude=qemu-ec-sp
+cargo hack check --feature-powerset --target=aarch64-unknown-none
+cargo test -q
 cd "$PROJECT_DIR/platform/qemu-sp" && cargo build --target=aarch64-unknown-none
 cd "$PROJECT_DIR/platform/ihv1-sp" && cargo build --target=aarch64-unknown-none

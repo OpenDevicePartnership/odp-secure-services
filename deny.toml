@@ -197,6 +197,8 @@ deny = [
 skip = [
     #"ansi_term@0.11.0",
     #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason why it can't be updated/removed" },
+    { crate = "syn@1.0.109", reason = "temporary duplicate allowed while transitive proc-macro dependency chain is updated" },
+    { crate = "syn@2.0.100", reason = "temporary duplicate allowed while transitive proc-macro dependency chain is updated" },
 ]
 # Similarly to `skip` allows you to skip certain crates during duplicate
 # detection. Unlike skip, it also includes the entire tree of transitive
@@ -221,7 +223,7 @@ unknown-git = "warn"
 # if not specified. If it is specified but empty, no registries are allowed.
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
-allow-git = []
+allow-git = ["https://github.com/OpenDevicePartnership/odp-utilities"]
 
 [sources.allow-org]
 # gitlab.com organizations to allow git sources for
