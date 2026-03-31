@@ -23,6 +23,7 @@ aarch64-cpu.workspace = true
 
 [features]
 default = []
+test-bypass-locality-check = []
 
 [lints]
 workspace = true

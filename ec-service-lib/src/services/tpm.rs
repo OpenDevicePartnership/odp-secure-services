@@ -117,6 +117,8 @@ pub enum TpmFunction {
     UnregisterForNotification = 0x0f00_0401,
     FinishNotified = 0x0f00_0501,
     ManageLocality = 0x1f00_0001,
+    #[cfg(feature = "test-bypass-locality-check")]
+    TestWriteCrb = 0xDE00_0001,
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +611,38 @@ impl<S: TpmSstOps> TpmService<S> {
     pub fn deinit(&mut self) {
         // Nothing to de-init.
     }
+
+    /// Test-only: write a specific value to a CRB register in the internal CRB.
+    /// function field selects the operation:
+    ///   0 = locality_control = REQUEST_ACCESS
+    ///   1 = locality_control = RELINQUISH
+    ///   2 = crb_control_request = CMD_READY
+    ///   3 = crb_control_request = GO_IDLE
+    ///   4 = crb_control_start = START
+    #[cfg(feature = "test-bypass-locality-check")]
+    fn test_write_crb(&mut self, request: &TpmRequest) -> TpmStatus {
+        let operation = request.function as u16;
+        let locality = request.locality as u8;
+        if locality >= NUM_LOCALITIES {
+            error!("test_write_crb: Invalid Locality");
+            return TpmStatus::InvArg;
+        }
+        // SAFETY: locality is bounds-checked above and the CRB address was
+        // validated during init().
+        let crb = unsafe { &mut *self.crb_ptr(locality) };
+        match operation {
+            0 => crb.locality_control = PTP_CRB_LOCALITY_CONTROL_REQUEST_ACCESS,
+            1 => crb.locality_control = PTP_CRB_LOCALITY_CONTROL_RELINQUISH,
+            2 => crb.crb_control_request = PTP_CRB_CONTROL_AREA_REQUEST_COMMAND_READY,
+            3 => crb.crb_control_request = PTP_CRB_CONTROL_AREA_REQUEST_GO_IDLE,
+            4 => crb.crb_control_start = PTP_CRB_CONTROL_START,
+            _ => {
+                error!("test_write_crb: Invalid Operation");
+                return TpmStatus::InvArg;
+            }
+        }
+        TpmStatus::Ok
+    }
 }
 
 impl<S: TpmSstOps> Service for TpmService<S> {
@@ -643,14 +677,20 @@ impl<S: TpmSstOps> Service for TpmService<S> {
             }
             opcode if opcode == TpmFunction::ManageLocality as u64 => {
                 // Only allow from a logical SP owned by TF-A (source_id high byte == 0xFF).
-                // NOTE: This should really be msg.source_id()
-                if (msg.destination_id() & 0xFF00) != 0xFF00 {
-                    error!("Invalid Source ID: {:X}", msg.destination_id());
+                #[cfg(not(feature = "test-bypass-locality-check"))]
+                if (msg.source_id() & 0xFF00) != 0xFF00 {
+                    error!("Invalid Source ID: {:X}", msg.source_id());
                     TpmStatus::Denied as u64
                 } else {
                     self.manage_locality_handler(&req_payload, &mut resp_payload) as u64
                 }
+                #[cfg(feature = "test-bypass-locality-check")]
+                {
+                    self.manage_locality_handler(&req_payload, &mut resp_payload) as u64
+                }
             }
+            #[cfg(feature = "test-bypass-locality-check")]
+            opcode if opcode == TpmFunction::TestWriteCrb as u64 => self.test_write_crb(&req_payload) as u64,
             _ => {
                 error!("Invalid TPM Service Opcode");
                 TpmStatus::NoFunc as u64
@@ -955,8 +995,8 @@ mod tests {
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00, // Locality 0
@@ -988,8 +1028,8 @@ mod tests {
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00, // Locality 0
@@ -1064,8 +1104,8 @@ mod tests {
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00, // Locality 0
@@ -1136,8 +1176,8 @@ mod tests {
     fn test_start_locality_mismatch() {
         let mut service = TpmService::new(MockTpmSst::new());
         let open_msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00, // Locality 0
@@ -1218,8 +1258,8 @@ mod tests {
     fn test_manage_locality_open() {
         let mut service = TpmService::new(MockTpmSst::new());
         let msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00, // Locality 0
@@ -1236,8 +1276,8 @@ mod tests {
         //       locality_states array should only be accessible by the service.
         service.locality_states[0] = TpmLocalityState::Open;
         let msg = direct_req2_msg(
-            0x0000,
             0xFF01,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
             0x00, // Locality 0
@@ -1251,8 +1291,8 @@ mod tests {
     fn test_manage_locality_invalid_function() {
         let mut service = TpmService::new(MockTpmSst::new());
         let msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             0xFF, // Invalid Function
             0x00,
@@ -1265,8 +1305,8 @@ mod tests {
     fn test_manage_locality_invalid_locality() {
         let mut service = TpmService::new(MockTpmSst::new());
         let msg = direct_req2_msg(
-            0x0000,
             0xFF00,
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x10, // Invalid Locality
@@ -1278,10 +1318,10 @@ mod tests {
     #[test]
     fn test_manage_locality_invalid_source() {
         let mut service = TpmService::new(MockTpmSst::new());
-        // destination_id high byte is NOT 0xFF → should be denied
+        // source_id high byte is NOT 0xFF → should be denied
         let msg = direct_req2_msg(
-            0x0000,
             0x0000, // Invalid Source ID
+            0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
             0x00,
@@ -1295,8 +1335,8 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new());
         for loc in 0..NUM_LOCALITIES {
             let msg = direct_req2_msg(
-                0x0000,
                 0xFF00,
+                0x0000,
                 TpmFunction::ManageLocality as u64,
                 TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
                 loc as u64,
@@ -1312,8 +1352,8 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new());
         for locality in 0..NUM_LOCALITIES {
             let msg = direct_req2_msg(
-                0x0000,
                 0xFF00,
+                0x0000,
                 TpmFunction::ManageLocality as u64,
                 TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
                 locality as u64,
