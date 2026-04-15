@@ -609,6 +609,44 @@ mod tests {
     }
 
     #[test]
+    fn test_btp_zero_value_write() {
+        let mut bat = Battery::new();
+        // Set BTP to non-zero first
+        let _ = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BTP, 50))
+            .unwrap();
+        // Set BTP to 0 with set_flag byte set — should persist zero
+        let resp = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BTP, 0))
+            .unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+        // Read back to verify persistence
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BTP)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+    }
+
+    #[test]
+    fn test_bmc_zero_value_write() {
+        let mut bat = Battery::new();
+        // Set BMC to non-zero first
+        let _ = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BMC, 0x42))
+            .unwrap();
+        // Set BMC to 0 with set_flag byte set — should persist zero
+        let resp = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BMC, 0))
+            .unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+        // Read back to verify persistence
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMC)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+    }
+
+    #[test]
     fn test_unknown_command_returns_error() {
         let mut bat = Battery::new();
         let result = bat.ffa_msg_send_direct_req2(bat_req(0xFF));
