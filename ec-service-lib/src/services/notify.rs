@@ -512,41 +512,12 @@ impl Notify {
             }
         };
 
-        for (cookie, id, ntype) in req.notifications.iter().take(req.count as usize) {
-            match self.nfy_find_matching_cookie(entry_index, *cookie) {
-                Some(mapping_index) => {
-                    let mapping = &mut self.entries[entry_index].mappings[mapping_index];
-                    // Clear old bit, set new bit (safe: mapping.id was validated on insert)
-                    if let Some(old_bit) = nfy_bitmask(mapping.id) {
-                        self.global_bitmap &= !old_bit;
-                    }
-                    let new_bit = match nfy_bitmask(*id) {
-                        Some(b) => b,
-                        None => {
-                            error!("Assign id out of range: {id}");
-                            return NfySetupRsp {
-                                reserved: 0,
-                                sender_uuid: req.sender_uuid,
-                                receiver_uuid: req.receiver_uuid,
-                                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                                status: ErrorCode::InvalidParameters,
-                            };
-                        }
-                    };
-                    if self.global_bitmap & new_bit != 0 {
-                        error!("Bitmask conflict during assign for id: {id}");
-                        return NfySetupRsp {
-                            reserved: 0,
-                            sender_uuid: req.sender_uuid,
-                            receiver_uuid: req.receiver_uuid,
-                            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                            status: ErrorCode::InvalidParameters,
-                        };
-                    }
-                    mapping.id = *id;
-                    mapping.ntype = *ntype;
-                    self.global_bitmap |= new_bit;
-                }
+        // Pre-validation pass: check all tuples before mutating any state.
+        // Track a simulated bitmap to detect cross-tuple conflicts.
+        let mut sim_bitmap = self.global_bitmap;
+        for (cookie, id, _ntype) in req.notifications.iter().take(req.count as usize) {
+            let mapping_index = match self.nfy_find_matching_cookie(entry_index, *cookie) {
+                Some(idx) => idx,
                 None => {
                     error!("No matching cookie for assign: {cookie}");
                     return NfySetupRsp {
@@ -557,8 +528,45 @@ impl Notify {
                         status: ErrorCode::InvalidParameters,
                     };
                 }
+            };
+            let mapping = &self.entries[entry_index].mappings[mapping_index];
+            if let Some(old_bit) = nfy_bitmask(mapping.id) {
+                sim_bitmap &= !old_bit;
             }
+            let new_bit = match nfy_bitmask(*id) {
+                Some(b) => b,
+                None => {
+                    error!("Assign id out of range: {id}");
+                    return NfySetupRsp {
+                        reserved: 0,
+                        sender_uuid: req.sender_uuid,
+                        receiver_uuid: req.receiver_uuid,
+                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                        status: ErrorCode::InvalidParameters,
+                    };
+                }
+            };
+            if sim_bitmap & new_bit != 0 {
+                error!("Bitmask conflict during assign for id: {id}");
+                return NfySetupRsp {
+                    reserved: 0,
+                    sender_uuid: req.sender_uuid,
+                    receiver_uuid: req.receiver_uuid,
+                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                    status: ErrorCode::InvalidParameters,
+                };
+            }
+            sim_bitmap |= new_bit;
         }
+
+        // All validated — apply mutations atomically.
+        for (cookie, id, ntype) in req.notifications.iter().take(req.count as usize) {
+            let mapping_index = self.nfy_find_matching_cookie(entry_index, *cookie).unwrap();
+            let mapping = &mut self.entries[entry_index].mappings[mapping_index];
+            mapping.id = *id;
+            mapping.ntype = *ntype;
+        }
+        self.global_bitmap = sim_bitmap;
 
         NfySetupRsp {
             reserved: 0,
@@ -583,29 +591,33 @@ impl Notify {
             }
         };
 
+        // Pre-validation pass: ensure all cookies exist before mutating.
         for (cookie, _id, _ntype) in req.notifications.iter().take(req.count as usize) {
-            match self.nfy_find_matching_cookie(entry_index, *cookie) {
-                Some(mapping_index) => {
-                    let mapping = &mut self.entries[entry_index].mappings[mapping_index];
-                    if let Some(bit) = nfy_bitmask(mapping.id) {
-                        self.global_bitmap &= !bit;
-                    }
-                    mapping.id = 0;
-                    mapping.ntype = NotifyType::Global;
-                    // Keep in_use = true and cookie — slot is reserved, just unassigned
-                }
-                None => {
-                    error!("No matching cookie for unassign: {cookie}");
-                    return NfySetupRsp {
-                        reserved: 0,
-                        sender_uuid: req.sender_uuid,
-                        receiver_uuid: req.receiver_uuid,
-                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
-                        status: ErrorCode::InvalidParameters,
-                    };
-                }
+            if self.nfy_find_matching_cookie(entry_index, *cookie).is_none() {
+                error!("No matching cookie for unassign: {cookie}");
+                return NfySetupRsp {
+                    reserved: 0,
+                    sender_uuid: req.sender_uuid,
+                    receiver_uuid: req.receiver_uuid,
+                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
+                    status: ErrorCode::InvalidParameters,
+                };
             }
         }
+
+        // All validated — apply mutations atomically.
+        let mut new_bitmap = self.global_bitmap;
+        for (cookie, _id, _ntype) in req.notifications.iter().take(req.count as usize) {
+            let mapping_index = self.nfy_find_matching_cookie(entry_index, *cookie).unwrap();
+            let mapping = &mut self.entries[entry_index].mappings[mapping_index];
+            if let Some(bit) = nfy_bitmask(mapping.id) {
+                new_bitmap &= !bit;
+            }
+            mapping.id = 0;
+            mapping.ntype = NotifyType::Global;
+            // Keep in_use = true and cookie — slot is reserved, just unassigned
+        }
+        self.global_bitmap = new_bitmap;
 
         NfySetupRsp {
             reserved: 0,
@@ -717,12 +729,43 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_overflow_count() {
+    fn test_setup_overflow_count_clamped() {
+        // NotifyReq::from() clamps count with .min(7), so a raw count of
+        // NOTIFY_MAX_MAPPINGS_PER_REQ (8) becomes 7. Verify the request
+        // succeeds with 7 distinct valid tuples rather than hitting the
+        // `count >= NOTIFY_MAX_MAPPINGS_PER_REQ` guard.
         let mut svc = Notify::new();
-        // NOTIFY_MAX_MAPPINGS_PER_REQ is 8, so count >= 8 should fail
-        let msg = notify_req(MessageID::Setup, NOTIFY_MAX_MAPPINGS_PER_REQ as u8, &[(100, 1, 0)]);
+        let tuples: [(u32, u16, u8); 7] = [
+            (100, 1, 0),
+            (101, 2, 0),
+            (102, 3, 0),
+            (103, 4, 0),
+            (104, 5, 0),
+            (105, 6, 0),
+            (106, 7, 0),
+        ];
+        let msg = notify_req(MessageID::Setup, NOTIFY_MAX_MAPPINGS_PER_REQ as u8, &tuples);
         let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
-        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+        assert_eq!(resp_error_code(&resp), ErrorCode::Ok as i64);
+    }
+
+    #[test]
+    fn test_setup_max_valid_count() {
+        // count=7 is the effective maximum (from() clamps to .min(7)).
+        // Verify 7 distinct tuples register successfully.
+        let mut svc = Notify::new();
+        let tuples: [(u32, u16, u8); 7] = [
+            (200, 10, 0),
+            (201, 11, 0),
+            (202, 12, 0),
+            (203, 13, 0),
+            (204, 14, 0),
+            (205, 15, 0),
+            (206, 16, 0),
+        ];
+        let msg = notify_req(MessageID::Setup, 7, &tuples);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::Ok as i64);
     }
 
     // ===================================================================
