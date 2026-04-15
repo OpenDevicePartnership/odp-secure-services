@@ -12,6 +12,9 @@ const EC_THM_SET_SCP: u8 = 0x4;
 const EC_THM_GET_VAR: u8 = 0x5;
 const EC_THM_SET_VAR: u8 = 0x6;
 
+const MAX_SENSORS: usize = 8;
+const MAX_VARS: usize = 16;
+
 #[derive(Default)]
 struct GenericRsp {
     status: i64,
@@ -114,15 +117,81 @@ impl From<&DirectMessagePayload> for SetVarReq {
     }
 }
 
-#[derive(Default)]
-pub struct Thermal {}
+#[derive(Default, Clone, Copy)]
+struct ThresholdData {
+    timeout: u32,
+    low_temp: u32,
+    high_temp: u32,
+}
+
+#[derive(Default, Clone, Copy)]
+struct CoolingPolicyData {
+    _policy_type: u8,
+}
+
+struct ThresholdRsp {
+    status: i64,
+    timeout: u32,
+    low_temp: u32,
+    high_temp: u32,
+}
+
+impl From<ThresholdRsp> for DirectMessagePayload {
+    fn from(value: ThresholdRsp) -> Self {
+        DirectMessagePayload::from_iter(
+            value
+                .status
+                .to_le_bytes()
+                .into_iter()
+                .chain(value.timeout.to_le_bytes())
+                .chain(value.low_temp.to_le_bytes())
+                .chain(value.high_temp.to_le_bytes()),
+        )
+    }
+}
+
+struct CoolingPolicyReq {
+    id: u8,
+    policy_type: u8,
+}
+
+impl From<&DirectMessagePayload> for CoolingPolicyReq {
+    fn from(msg: &DirectMessagePayload) -> CoolingPolicyReq {
+        CoolingPolicyReq {
+            id: msg.u8_at(1),
+            policy_type: msg.u8_at(2),
+        }
+    }
+}
+
+pub struct Thermal {
+    thresholds: [Option<ThresholdData>; MAX_SENSORS],
+    cooling_policies: [Option<CoolingPolicyData>; MAX_SENSORS],
+    variables: [(Uuid, u32); MAX_VARS],
+    var_count: usize,
+    var_timestamps: [u64; MAX_VARS],
+    var_clock: u64,
+}
+
+impl Default for Thermal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Thermal {
     pub fn new() -> Self {
-        Self::default()
+        Thermal {
+            thresholds: [None; MAX_SENSORS],
+            cooling_policies: [None; MAX_SENSORS],
+            variables: [(Uuid::nil(), 0u32); MAX_VARS],
+            var_count: 0,
+            var_timestamps: [0u64; MAX_VARS],
+            var_clock: 0,
+        }
     }
 
-    fn get_temperature(&self, msg: &MsgSendDirectReq2) -> TempRsp {
+    fn get_temperature(&mut self, msg: &MsgSendDirectReq2) -> TempRsp {
         debug!("get_temperature sensor 0x{:x}", msg.payload().u8_at(1));
 
         // Tell OS to delay 1 ms
@@ -134,58 +203,143 @@ impl Thermal {
         }
     }
 
-    fn set_threshold(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
+    fn set_threshold(&mut self, msg: &MsgSendDirectReq2) -> GenericRsp {
         let req: ThresholdReq = msg.payload().into();
         debug!(
-            "set_threshold temperature sensor 0x{:x}
-                Timeout: 0x{:x}
-                LowThreshold: 0x{:x}
-                HighThreshold: 0x{:x}",
+            "set_threshold sensor 0x{:x} timeout=0x{:x} low=0x{:x} high=0x{:x}",
             req.id, req.timeout, req.low_temp, req.high_temp
         );
 
-        GenericRsp { status: 0x0 }
+        let idx = req.id as usize;
+        if idx >= MAX_SENSORS {
+            return GenericRsp { status: -1 };
+        }
+
+        self.thresholds[idx] = Some(ThresholdData {
+            timeout: req.timeout,
+            low_temp: req.low_temp,
+            high_temp: req.high_temp,
+        });
+
+        GenericRsp { status: 0 }
     }
 
-    fn get_threshold(&self, _msg: &MsgSendDirectReq2) -> GenericRsp {
-        GenericRsp { status: 0x0 }
+    fn get_threshold(&mut self, msg: &MsgSendDirectReq2) -> ThresholdRsp {
+        let id = msg.payload().u8_at(1);
+        let idx = id as usize;
+
+        if idx >= MAX_SENSORS {
+            return ThresholdRsp {
+                status: -1,
+                timeout: 0,
+                low_temp: 0,
+                high_temp: 0,
+            };
+        }
+
+        match self.thresholds[idx] {
+            Some(data) => ThresholdRsp {
+                status: 0,
+                timeout: data.timeout,
+                low_temp: data.low_temp,
+                high_temp: data.high_temp,
+            },
+            None => ThresholdRsp {
+                status: 0,
+                timeout: 0,
+                low_temp: 0,
+                high_temp: 0,
+            },
+        }
     }
 
-    fn set_cooling_policy(&self, _msg: &MsgSendDirectReq2) -> GenericRsp {
-        GenericRsp { status: 0x0 }
+    fn set_cooling_policy(&mut self, msg: &MsgSendDirectReq2) -> GenericRsp {
+        let req: CoolingPolicyReq = msg.payload().into();
+        debug!(
+            "set_cooling_policy sensor 0x{:x} policy=0x{:x}",
+            req.id, req.policy_type
+        );
+
+        let idx = req.id as usize;
+        if idx >= MAX_SENSORS {
+            return GenericRsp { status: -1 };
+        }
+
+        self.cooling_policies[idx] = Some(CoolingPolicyData {
+            _policy_type: req.policy_type,
+        });
+
+        GenericRsp { status: 0 }
     }
 
-    fn get_variable(&self, msg: &MsgSendDirectReq2) -> ReadVarRsp {
+    fn get_variable(&mut self, msg: &MsgSendDirectReq2) -> ReadVarRsp {
         let req: ReadVarReq = msg.payload().into();
         debug!(
-            "get_variable instance id: 0x{:x}
-                length: 0x{:x}
-                uuid: {}",
+            "get_variable instance id: 0x{:x} length: 0x{:x} uuid: {}",
             req.id, req.len, req.var_uuid
         );
 
-        // Only support DWORD customized IO for now
         if req.len != 4 {
-            error!("get_variable only supports DWORD read")
+            error!("get_variable only supports DWORD read");
+            return ReadVarRsp { status: -1, data: 0 };
         }
 
-        ReadVarRsp {
-            status: 0x0,
-            data: 0xdeadbeef,
+        // Linear scan for UUID match
+        for i in 0..self.var_count {
+            if self.variables[i].0 == req.var_uuid {
+                // Touch timestamp for LRU tracking
+                self.var_clock += 1;
+                self.var_timestamps[i] = self.var_clock;
+                return ReadVarRsp {
+                    status: 0,
+                    data: self.variables[i].1,
+                };
+            }
         }
+
+        // UUID not found
+        ReadVarRsp { status: -1, data: 0 }
     }
 
-    fn set_variable(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
+    fn set_variable(&mut self, msg: &MsgSendDirectReq2) -> GenericRsp {
         let req: SetVarReq = msg.payload().into();
         debug!(
-            "get_variable instance id: 0x{:x}
-                length: 0x{:x}
-                uuid: {}
-                data: 0x{:x}",
+            "set_variable instance id: 0x{:x} length: 0x{:x} uuid: {} data: 0x{:x}",
             req.id, req.len, req.var_uuid, req.data
         );
 
-        GenericRsp { status: 0x0 }
+        // Upsert: check if UUID already exists
+        for i in 0..self.var_count {
+            if self.variables[i].0 == req.var_uuid {
+                self.variables[i].1 = req.data;
+                self.var_clock += 1;
+                self.var_timestamps[i] = self.var_clock;
+                return GenericRsp { status: 0 };
+            }
+        }
+
+        // Insert into open slot or evict LRU
+        if self.var_count < MAX_VARS {
+            self.variables[self.var_count] = (req.var_uuid, req.data);
+            self.var_clock += 1;
+            self.var_timestamps[self.var_count] = self.var_clock;
+            self.var_count += 1;
+        } else {
+            // LRU eviction: find entry with lowest timestamp
+            let mut oldest_idx = 0;
+            let mut oldest_ts = self.var_timestamps[0];
+            for i in 1..MAX_VARS {
+                if self.var_timestamps[i] < oldest_ts {
+                    oldest_ts = self.var_timestamps[i];
+                    oldest_idx = i;
+                }
+            }
+            self.variables[oldest_idx] = (req.var_uuid, req.data);
+            self.var_clock += 1;
+            self.var_timestamps[oldest_idx] = self.var_clock;
+        }
+
+        GenericRsp { status: 0 }
     }
 }
 
