@@ -119,58 +119,24 @@ impl FwMgmt {
         }
     }
 
-    fn map_share(&self, _address: u64, _length: u64) -> GenericRsp {
+    fn map_share(&self, _address: u64, _length: u64) -> Result<DirectMessagePayload> {
         // TODO - do not hardcode address and length in MemRetrieveReq
-        MemRetrieveReq::new().exec().unwrap();
-        GenericRsp { _status: 0x0 }
+        MemRetrieveReq::new().exec()?;
+        Ok(DirectMessagePayload::from(GenericRsp { _status: 0x0 }))
     }
 
-    fn test_notify(&self, msg: MsgSendDirectReq2) -> GenericRsp {
-        // let nfy = FfaNotify {
-        //     function_id: FunctionId::NotificationSet.into(),
-        //     source_id: msg.destination_id,
-        //     destination_id: msg.source_id,
-        //     args64: [
-        //         0x2, 0x2, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-        //     ],
-        // };
-
-        // let _result = nfy.exec();
-
+    fn test_notify(&self, msg: MsgSendDirectReq2) -> Result<DirectMessagePayload> {
         let flags = 0b10;
         let notification_bitmap = 0b10;
-        NotificationSet::new(msg.destination_id(), msg.source_id(), flags, notification_bitmap)
-            .exec()
-            .unwrap();
+        NotificationSet::new(msg.destination_id(), msg.source_id(), flags, notification_bitmap).exec()?;
 
         // Return status success
-        GenericRsp { _status: 0x0 }
+        Ok(DirectMessagePayload::from(GenericRsp { _status: 0x0 }))
     }
 
-    fn process_indirect(&self, seq_num: u16, _rx_buffer: u64, _tx_buffer: u64) -> GenericRsp {
+    fn process_indirect(&self, seq_num: u16, _rx_buffer: u64, _tx_buffer: u64) -> Result<DirectMessagePayload> {
         debug!("Processing indirect message: 0x{:x}", seq_num);
-        // let msg = FfaIndirectMsg::new();
-        // let mut in_buf: [u8; 256] = [0; 256];
-        // let mut status;
-
-        // unsafe {
-        //     status = msg.read_indirect_msg(rx_buffer, seq_num, &mut in_buf);
-        // };
-
-        // if status == FfaError::Ok {
-        //     error!("Indirect Message: {:?}", in_buf);
-        // }
-
-        // // Populate TX buffer with response and matching seq num
-        // let buf: [u8; 16] = [
-        //     0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF,
-        // ];
-        // unsafe {
-        //     status = msg.write_indirect_msg(tx_buffer, seq_num, &buf);
-        // };
-
-        // GenericRsp { _status: status.into() }
-        GenericRsp { _status: 0x0 }
+        Err(odp_ffa::Error::Other("process_indirect not supported"))
     }
 }
 
@@ -183,18 +149,18 @@ impl Service for FwMgmt {
         debug!("Received FwMgmt command 0x{:x}", cmd);
 
         let payload = match cmd {
-            EC_CAP_INDIRECT_MSG => DirectMessagePayload::from(self.process_indirect(
+            EC_CAP_INDIRECT_MSG => self.process_indirect(
                 msg.payload().u8_at(1) as u16,
                 msg.payload().register_at(4),
                 msg.payload().register_at(5),
-            )),
+            )?,
             EC_CAP_GET_FW_STATE => DirectMessagePayload::from(self.get_fw_state()),
             EC_CAP_GET_SVC_LIST => DirectMessagePayload::from(self.get_svc_list()),
             EC_CAP_GET_BID => DirectMessagePayload::from(self.get_bid()),
-            EC_CAP_TEST_NFY => DirectMessagePayload::from(self.test_notify(msg.clone())),
+            EC_CAP_TEST_NFY => self.test_notify(msg.clone())?,
             EC_CAP_MAP_SHARE => {
                 // First parameter is pointer to memory descriptor
-                DirectMessagePayload::from(self.map_share(msg.payload().register_at(1), msg.payload().register_at(2)))
+                self.map_share(msg.payload().register_at(1), msg.payload().register_at(2))?
             }
             _ => {
                 error!("Unknown FwMgmt Command: {}", cmd);
