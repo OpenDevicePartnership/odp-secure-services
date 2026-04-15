@@ -1401,4 +1401,155 @@ mod tests {
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::NoFunc as u64);
     }
+
+    // =======================================================================
+    // TpmService::GetFeatureInfo Extended Test(s)
+    // =======================================================================
+    #[test]
+    fn test_get_feature_info_notification() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        let msg = direct_req2_msg(
+            0x0000,
+            0x0000,
+            TpmFunction::GetFeatureInfo as u64,
+            TpmFunction::RegisterForNotification as u64, // Query notification feature
+            0x00,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::OkResultsReturned as u64);
+        assert_eq!(resp_payload(&resp) & 0x1, 0x1); // Notifications supported
+    }
+
+    #[test]
+    fn test_get_feature_info_unknown_feature() {
+        // Mirrors existing test_get_feature_info — unknown feature returns NotSup
+        let mut service = TpmService::new(MockTpmSst::new());
+        let msg = direct_req2_msg(
+            0x0000,
+            0x0000,
+            TpmFunction::GetFeatureInfo as u64,
+            0x00, // Unknown feature ID
+            0x00,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
+    }
+
+    // =======================================================================
+    // TpmService::Register/Unregister State Transition Test(s)
+    // =======================================================================
+    #[test]
+    fn test_register_then_unregister() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        // Register
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert!(service.notification_registered);
+
+        // Unregister
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::UnregisterForNotification as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert!(!service.notification_registered);
+    }
+
+    #[test]
+    fn test_register_double_returns_already() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        service.ffa_msg_send_direct_req2(msg.clone()).unwrap();
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Already as u64);
+    }
+
+    #[test]
+    fn test_unregister_without_register_returns_denied() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::UnregisterForNotification as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Denied as u64);
+    }
+
+    // =======================================================================
+    // TpmService::Finish Test(s) — Extended
+    // =======================================================================
+    #[test]
+    fn test_finish_after_register() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        // Register first
+        let reg_msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        service.ffa_msg_send_direct_req2(reg_msg).unwrap();
+
+        // Finish should succeed
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::FinishNotified as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+    }
+
+    #[test]
+    fn test_finish_without_register_returns_denied() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::FinishNotified as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Denied as u64);
+    }
+
+    // =======================================================================
+    // TpmService::Deinit Test(s)
+    // =======================================================================
+    #[test]
+    fn test_deinit_resets_state() {
+        let (buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new());
+        unsafe { service.init(addr) };
+
+        // Open a locality
+        let open_msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0,
+        );
+        service.ffa_msg_send_direct_req2(open_msg).unwrap();
+
+        // Register notification
+        let reg_msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        service.ffa_msg_send_direct_req2(reg_msg).unwrap();
+
+        // Verify state is modified
+        assert_eq!(service.locality_states[0], TpmLocalityState::Open);
+        assert!(service.notification_registered);
+
+        // Deinit should reset everything
+        service.deinit();
+        assert_eq!(service.current_state, TpmState::Idle);
+        assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
+        assert_eq!(
+            service.locality_states,
+            [TpmLocalityState::Closed; NUM_LOCALITIES as usize]
+        );
+        assert!(!service.notification_registered);
+
+        drop(buff); // prevent early deallocation
+    }
+
+    #[test]
+    fn test_register_after_deinit() {
+        let mut service = TpmService::new(MockTpmSst::new());
+        // Register, then deinit
+        let reg_msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        service.ffa_msg_send_direct_req2(reg_msg).unwrap();
+        assert!(service.notification_registered);
+
+        service.deinit();
+        assert!(!service.notification_registered);
+
+        // Re-register should work (state was properly reset)
+        let reg_msg2 = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0, 0);
+        let resp = service.ffa_msg_send_direct_req2(reg_msg2).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert!(service.notification_registered);
+    }
 }
