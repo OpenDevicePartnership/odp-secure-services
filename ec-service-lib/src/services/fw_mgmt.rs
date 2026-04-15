@@ -171,3 +171,94 @@ impl Service for FwMgmt {
         Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
     }
 }
+
+// ===========================================================================
+// FwMgmt Unit Tests
+// ===========================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use odp_ffa::{DirectMessagePayload, HasRegisterPayload};
+
+    const FWMGMT_UUID: Uuid = uuid!("330c1273-fde5-4757-9819-5b6539037502");
+
+    /// Build a FwMgmt request with the given command byte.
+    fn fwmgmt_req(cmd: u8) -> MsgSendDirectReq2 {
+        let mut bytes = [0u8; 14 * 8];
+        bytes[0] = cmd;
+        let payload = DirectMessagePayload::from_iter(bytes);
+        MsgSendDirectReq2::new(0x0001, 0x8001, FWMGMT_UUID, payload)
+    }
+
+    /// Extract status (i64) from response payload register 0.
+    fn resp_status_i64(resp: &MsgSendDirectResp2) -> i64 {
+        resp.payload().u64_at(0) as i64
+    }
+
+    // ===================================================================
+    // FwMgmt::get_fw_state Test
+    // ===================================================================
+    #[test]
+    fn test_get_fw_state() {
+        let mut svc = FwMgmt::new();
+        let resp = svc.ffa_msg_send_direct_req2(fwmgmt_req(EC_CAP_GET_FW_STATE)).unwrap();
+        let p = resp.payload();
+        // FwStateRsp serializes: fw_version(u16 LE) + secure_state(u8) + boot_status(u8) = 4 bytes
+        assert_eq!(p.u8_at(0), 0x00); // fw_version low byte
+        assert_eq!(p.u8_at(1), 0x01); // fw_version high byte (0x0100 LE)
+        assert_eq!(p.u8_at(2), 0x00); // secure_state
+        assert_eq!(p.u8_at(3), 0x01); // boot_status
+    }
+
+    // ===================================================================
+    // FwMgmt::get_svc_list Test
+    // ===================================================================
+    #[test]
+    fn test_get_svc_list() {
+        let mut svc = FwMgmt::new();
+        let resp = svc.ffa_msg_send_direct_req2(fwmgmt_req(EC_CAP_GET_SVC_LIST)).unwrap();
+        // ServiceListRsp: status(i64) + debug_mask(u16) + battery_mask(u8) + fan_mask(u8) +
+        //                 thermal_mask(u8) + hid_mask(u8) + key_mask(u16)
+        assert_eq!(resp_status_i64(&resp), 0x0); // status
+        let p = resp.payload();
+        assert_eq!(p.u8_at(8), 0x01); // debug_mask low byte
+        assert_eq!(p.u8_at(10), 0x01); // battery_mask
+        assert_eq!(p.u8_at(11), 0x01); // fan_mask
+        assert_eq!(p.u8_at(12), 0x01); // thermal_mask
+        assert_eq!(p.u8_at(13), 0x00); // hid_mask
+        assert_eq!(p.u8_at(14), 0x07); // key_mask low byte
+    }
+
+    // ===================================================================
+    // FwMgmt::get_bid Test
+    // ===================================================================
+    #[test]
+    fn test_get_bid() {
+        let mut svc = FwMgmt::new();
+        let resp = svc.ffa_msg_send_direct_req2(fwmgmt_req(EC_CAP_GET_BID)).unwrap();
+        assert_eq!(resp_status_i64(&resp), 0x0);
+        let p = resp.payload();
+        let bid = p.u64_at(8); // _bid starts at offset 8 (after i64 status)
+        assert_eq!(bid, 0xdead0001);
+    }
+
+    // ===================================================================
+    // FwMgmt::process_indirect Test
+    // ===================================================================
+    #[test]
+    fn test_process_indirect_returns_error() {
+        let mut svc = FwMgmt::new();
+        let result = svc.ffa_msg_send_direct_req2(fwmgmt_req(EC_CAP_INDIRECT_MSG));
+        assert!(result.is_err(), "process_indirect should return an error");
+    }
+
+    // ===================================================================
+    // FwMgmt Unknown Command Test
+    // ===================================================================
+    #[test]
+    fn test_unknown_command_returns_error() {
+        let mut svc = FwMgmt::new();
+        let result = svc.ffa_msg_send_direct_req2(fwmgmt_req(0xFF));
+        assert!(result.is_err());
+    }
+}

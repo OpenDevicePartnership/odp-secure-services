@@ -611,3 +611,211 @@ impl Service for Notify {
         Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
     }
 }
+
+// ===========================================================================
+// Notify Unit Tests
+// ===========================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use odp_ffa::{DirectMessagePayload, HasRegisterPayload};
+    use uuid::uuid;
+
+    const NOTIFY_UUID: Uuid = uuid!("e474d87e-5731-4044-a727-cb3e8cf3c8df");
+    const SENDER_UUID: Uuid = uuid!("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    const RECEIVER_UUID: Uuid = uuid!("11111111-2222-3333-4444-555555555555");
+
+    /// Build a notify request with given message_id, count, and notification tuples.
+    /// Each tuple is (cookie: u32, id: u16, ntype: 0=Global / 1=PerVcpu).
+    fn notify_req(msg_id: MessageID, count: u8, notifs: &[(u32, u16, u8)]) -> MsgSendDirectReq2 {
+        let mut regs = [0u64; 14];
+        // regs[1-2] = sender_uuid as LE u128 split into two u64s
+        let sender_le = SENDER_UUID.to_u128_le();
+        regs[1] = sender_le as u64;
+        regs[2] = (sender_le >> 64) as u64;
+        // regs[3-4] = receiver_uuid as LE u128 split into two u64s
+        let receiver_le = RECEIVER_UUID.to_u128_le();
+        regs[3] = receiver_le as u64;
+        regs[4] = (receiver_le >> 64) as u64;
+        // regs[5] = msg_info (bits 0-2 = message_id)
+        regs[5] = msg_id as u64;
+        // regs[6] = count (lower 9 bits)
+        regs[6] = count as u64;
+        // regs[7..] = notification tuples: cookie(bits63:32) | id(bits31:23) | type(bit0)
+        for (i, (cookie, id, ntype)) in notifs.iter().enumerate().take(7) {
+            regs[7 + i] = ((*cookie as u64) << 32) | ((*id as u64) << 23) | (*ntype as u64);
+        }
+        let payload_bytes = regs.iter().flat_map(|r| r.to_le_bytes());
+        let payload = DirectMessagePayload::from_iter(payload_bytes);
+        MsgSendDirectReq2::new(0x0001, 0x8001, NOTIFY_UUID, payload)
+    }
+
+    /// Extract the ErrorCode status from a NfySetupRsp-shaped response.
+    /// NfySetupRsp layout: reg0=reserved, reg1-2=sender_uuid, reg3-4=receiver_uuid,
+    /// reg5=msg_info, reg6=status.
+    fn resp_error_code(resp: &MsgSendDirectResp2) -> i64 {
+        resp.payload().register_at(6) as i64
+    }
+
+    /// Extract msg_info from response.
+    fn resp_msg_info(resp: &MsgSendDirectResp2) -> u64 {
+        resp.payload().register_at(5)
+    }
+
+    // ===================================================================
+    // Notify::Setup Test(s)
+    // ===================================================================
+    #[test]
+    fn test_setup_registers_service() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Setup, 1, &[(100, 1, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::Ok as i64);
+        assert_eq!(resp_msg_info(&resp), MESSAGE_INFO_DIR_RESP + MessageID::Setup as u64);
+    }
+
+    #[test]
+    fn test_setup_invalid_count_zero() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Setup, 0, &[]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+
+    #[test]
+    fn test_setup_overflow_count() {
+        let mut svc = Notify::new();
+        // NOTIFY_MAX_MAPPINGS_PER_REQ is 8, so count >= 8 should fail
+        let msg = notify_req(MessageID::Setup, NOTIFY_MAX_MAPPINGS_PER_REQ as u8, &[(100, 1, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+
+    // ===================================================================
+    // Notify::Destroy Test(s)
+    // ===================================================================
+    #[test]
+    fn test_destroy_after_setup() {
+        let mut svc = Notify::new();
+        // Setup first
+        let setup_msg = notify_req(MessageID::Setup, 1, &[(100, 1, 0)]);
+        let setup_resp = svc.ffa_msg_send_direct_req2(setup_msg).unwrap();
+        assert_eq!(resp_error_code(&setup_resp), ErrorCode::Ok as i64);
+
+        // Destroy with matching cookie/id/ntype
+        let destroy_msg = notify_req(MessageID::Destroy, 1, &[(100, 1, 0)]);
+        let destroy_resp = svc.ffa_msg_send_direct_req2(destroy_msg).unwrap();
+        assert_eq!(resp_error_code(&destroy_resp), ErrorCode::Ok as i64);
+        assert_eq!(
+            resp_msg_info(&destroy_resp),
+            MESSAGE_INFO_DIR_RESP + MessageID::Destroy as u64
+        );
+    }
+
+    #[test]
+    fn test_destroy_unregistered_returns_error() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Destroy, 1, &[(100, 1, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+
+    // ===================================================================
+    // Notify::Add Test(s)
+    // ===================================================================
+    #[test]
+    fn test_add_registers_mapping() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Add, 1, &[(200, 2, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::Ok as i64);
+        assert_eq!(resp_msg_info(&resp), MESSAGE_INFO_DIR_RESP + MessageID::Add as u64);
+    }
+
+    // ===================================================================
+    // Notify::Remove Test(s)
+    // ===================================================================
+    #[test]
+    fn test_add_then_remove() {
+        let mut svc = Notify::new();
+        // First: Add a mapping
+        let add_msg = notify_req(MessageID::Add, 1, &[(200, 2, 0)]);
+        let add_resp = svc.ffa_msg_send_direct_req2(add_msg).unwrap();
+        assert_eq!(resp_error_code(&add_resp), ErrorCode::Ok as i64);
+
+        // Then: Remove it
+        let remove_msg = notify_req(MessageID::Remove, 1, &[(200, 2, 0)]);
+        let remove_resp = svc.ffa_msg_send_direct_req2(remove_msg).unwrap();
+        assert_eq!(resp_error_code(&remove_resp), ErrorCode::Ok as i64);
+        assert_eq!(
+            resp_msg_info(&remove_resp),
+            MESSAGE_INFO_DIR_RESP + MessageID::Remove as u64
+        );
+    }
+
+    #[test]
+    fn test_remove_without_add_returns_error() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Remove, 1, &[(200, 2, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+
+    // ===================================================================
+    // Notify::Assign Test(s)
+    // ===================================================================
+    #[test]
+    fn test_assign_updates_mapping() {
+        let mut svc = Notify::new();
+        // Setup with 1 notification (cookie=100, id=1)
+        let setup_msg = notify_req(MessageID::Setup, 1, &[(100, 1, 0)]);
+        let setup_resp = svc.ffa_msg_send_direct_req2(setup_msg).unwrap();
+        assert_eq!(resp_error_code(&setup_resp), ErrorCode::Ok as i64);
+
+        // Assign same cookie with new id=5
+        let assign_msg = notify_req(MessageID::Assign, 1, &[(100, 5, 0)]);
+        let assign_resp = svc.ffa_msg_send_direct_req2(assign_msg).unwrap();
+        assert_eq!(resp_error_code(&assign_resp), ErrorCode::Ok as i64);
+        assert_eq!(
+            resp_msg_info(&assign_resp),
+            MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64
+        );
+    }
+
+    #[test]
+    fn test_assign_without_entry_returns_error() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Assign, 1, &[(100, 5, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+
+    // ===================================================================
+    // Notify::Unassign Test(s)
+    // ===================================================================
+    #[test]
+    fn test_unassign_clears_event() {
+        let mut svc = Notify::new();
+        // Setup with 1 notification (cookie=100, id=1)
+        let setup_msg = notify_req(MessageID::Setup, 1, &[(100, 1, 0)]);
+        let setup_resp = svc.ffa_msg_send_direct_req2(setup_msg).unwrap();
+        assert_eq!(resp_error_code(&setup_resp), ErrorCode::Ok as i64);
+
+        // Unassign by cookie
+        let unassign_msg = notify_req(MessageID::Unassign, 1, &[(100, 1, 0)]);
+        let unassign_resp = svc.ffa_msg_send_direct_req2(unassign_msg).unwrap();
+        assert_eq!(resp_error_code(&unassign_resp), ErrorCode::Ok as i64);
+        assert_eq!(
+            resp_msg_info(&unassign_resp),
+            MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64
+        );
+    }
+
+    #[test]
+    fn test_unassign_without_entry_returns_error() {
+        let mut svc = Notify::new();
+        let msg = notify_req(MessageID::Unassign, 1, &[(100, 1, 0)]);
+        let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_error_code(&resp), ErrorCode::InvalidParameters as i64);
+    }
+}
