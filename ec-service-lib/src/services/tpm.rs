@@ -223,6 +223,7 @@ pub struct TpmService<S: TpmSstOps> {
     interface_id_default: PtpCrbInterfaceIdentifier,
     locality_states: [TpmLocalityState; NUM_LOCALITIES as usize],
     tpm_internal_crb_address: u64,
+    notification_registered: bool,
     pub sst: S,
 }
 
@@ -236,6 +237,7 @@ impl<S: TpmSstOps> TpmService<S> {
             interface_id_default: PtpCrbInterfaceIdentifier::new(),
             locality_states: [TpmLocalityState::Closed; NUM_LOCALITIES as usize],
             tpm_internal_crb_address: 0x10000200000,
+            notification_registered: false,
             sst,
         }
     }
@@ -499,9 +501,17 @@ impl<S: TpmSstOps> TpmService<S> {
         TpmStatus::OkResultsReturned
     }
 
-    fn get_feature_info_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
-        error!("Unsupported Function");
-        TpmStatus::NotSup
+    fn get_feature_info_handler(&self, request: &TpmRequest, response: &mut TpmResponse) -> TpmStatus {
+        // Feature ID is in the function field (Arg1)
+        // Currently only notification feature (RegisterForNotification) is queryable
+        if request.function == TpmFunction::RegisterForNotification as u64 {
+            // Return feature flags in payload: bit 0 = notifications supported
+            response.tpm_payload = 0x1;
+            TpmStatus::OkResultsReturned
+        } else {
+            // Unknown feature ID
+            TpmStatus::NotSup
+        }
     }
 
     // SAFETY: Function invokes both handle_command and handle_locality_request which can
@@ -538,19 +548,32 @@ impl<S: TpmSstOps> TpmService<S> {
         return_val
     }
 
-    fn register_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
-        error!("Unsupported Function");
-        TpmStatus::NotSup
+    fn register_handler(&mut self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
+        if self.notification_registered {
+            TpmStatus::Already
+        } else {
+            self.notification_registered = true;
+            TpmStatus::Ok
+        }
     }
 
-    fn unregister_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
-        error!("Unsupported Function");
-        TpmStatus::NotSup
+    fn unregister_handler(&mut self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
+        if !self.notification_registered {
+            TpmStatus::Denied
+        } else {
+            self.notification_registered = false;
+            TpmStatus::Ok
+        }
     }
 
-    fn finish_handler(&self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
-        error!("Unsupported Function");
-        TpmStatus::NotSup
+    fn finish_handler(&mut self, _request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
+        if !self.notification_registered {
+            TpmStatus::Denied
+        } else {
+            // Acknowledge notification completion — no additional state change needed
+            // since notifications are edge-triggered in this stub implementation
+            TpmStatus::Ok
+        }
     }
 
     fn manage_locality_handler(&mut self, request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
@@ -605,11 +628,15 @@ impl<S: TpmSstOps> TpmService<S> {
 
         self.current_state = TpmState::Idle;
         self.active_locality = NO_ACTIVE_LOCALITY;
+        self.notification_registered = false;
     }
 
     /// De-initializes the TPM service (equivalent to `TpmServiceDeInit`).
     pub fn deinit(&mut self) {
-        // Nothing to de-init.
+        self.current_state = TpmState::Idle;
+        self.active_locality = NO_ACTIVE_LOCALITY;
+        self.locality_states = [TpmLocalityState::Closed; NUM_LOCALITIES as usize];
+        self.notification_registered = false;
     }
 
     /// Test-only: write a specific value to a CRB register in the internal CRB.
@@ -1220,7 +1247,7 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new());
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
-        assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
     }
 
     // =======================================================================
@@ -1237,7 +1264,7 @@ mod tests {
             0x00,
         );
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
-        assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
+        assert_eq!(resp_status(&resp), TpmStatus::Denied as u64);
     }
 
     // =======================================================================
@@ -1248,7 +1275,7 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new());
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::FinishNotified as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
-        assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
+        assert_eq!(resp_status(&resp), TpmStatus::Denied as u64);
     }
 
     // =======================================================================
