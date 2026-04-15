@@ -123,9 +123,9 @@ impl From<NfySetupRsp> for DirectMessagePayload {
 struct MessageInfo(u64);
 
 impl MessageInfo {
-    /// Get the message ID (bits 0–2).
-    fn message_id(&self) -> MessageID {
-        ((self.0 & 0b111) as u8).try_into().expect("Invalid Message ID")
+    /// Get the message ID (bits 0–2). Returns None for invalid bit patterns.
+    fn message_id(&self) -> Option<MessageID> {
+        ((self.0 & 0b111) as u8).try_into().ok()
     }
 
     /// Construct from a raw u64.
@@ -137,10 +137,19 @@ impl MessageInfo {
 #[derive(Default, Debug, Copy, Clone)]
 struct NfyMapping {
     cookie: u32,       // Cookie for the notification
-    id: u16,           // Global bitmask value
+    id: u16,           // Global bitmask value (must be < 64 for u64 bitmap)
     ntype: NotifyType, // Type of notification (Global or PerVcpu)
     src_id: u16,       // Source ID for the notification
     in_use: bool,      // Whether the notification mapping is currently in use
+}
+
+/// Safely compute a bitmask for a notification ID, returning None if id >= 64.
+fn nfy_bitmask(id: u16) -> Option<u64> {
+    if id < 64 {
+        Some(1u64 << id)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -217,9 +226,9 @@ impl Notify {
                 // If we found a matching cookie, this does not make sense, so we return an error
                 error!("Found matching cookie for entry {entry_index}: {cookie}");
                 return ErrorCode::InvalidParameters;
-            } else if temp_bitmask & (1 << id) != 0 {
-                // If the bit is already set, we cannot register this mapping
-                error!("Bitmask already set for entry {entry_index}: {id}");
+            } else if nfy_bitmask(*id).is_none_or(|b| temp_bitmask & b != 0) {
+                // If the id is out of range or bit is already set, reject
+                error!("Bitmask conflict or out-of-range id for entry {entry_index}: {id}");
                 return ErrorCode::InvalidParameters;
             } else {
                 // No matching cookie found, we can register this mapping
@@ -237,7 +246,7 @@ impl Notify {
                         mapping.ntype = ntype;
                         mapping.src_id = req.src_id;
                         mapping.in_use = true;
-                        temp_bitmask |= 1 << id; // Set the bit in the global bitmap
+                        temp_bitmask |= nfy_bitmask(id).unwrap(); // Safe: validated above
                         applied = true;
                         break;
                     }
@@ -507,9 +516,24 @@ impl Notify {
             match self.nfy_find_matching_cookie(entry_index, *cookie) {
                 Some(mapping_index) => {
                     let mapping = &mut self.entries[entry_index].mappings[mapping_index];
-                    // Clear old bit, set new bit
-                    self.global_bitmap &= !(1 << mapping.id);
-                    if self.global_bitmap & (1 << id) != 0 {
+                    // Clear old bit, set new bit (safe: mapping.id was validated on insert)
+                    if let Some(old_bit) = nfy_bitmask(mapping.id) {
+                        self.global_bitmap &= !old_bit;
+                    }
+                    let new_bit = match nfy_bitmask(*id) {
+                        Some(b) => b,
+                        None => {
+                            error!("Assign id out of range: {id}");
+                            return NfySetupRsp {
+                                reserved: 0,
+                                sender_uuid: req.sender_uuid,
+                                receiver_uuid: req.receiver_uuid,
+                                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                                status: ErrorCode::InvalidParameters,
+                            };
+                        }
+                    };
+                    if self.global_bitmap & new_bit != 0 {
                         error!("Bitmask conflict during assign for id: {id}");
                         return NfySetupRsp {
                             reserved: 0,
@@ -521,7 +545,7 @@ impl Notify {
                     }
                     mapping.id = *id;
                     mapping.ntype = *ntype;
-                    self.global_bitmap |= 1 << id;
+                    self.global_bitmap |= new_bit;
                 }
                 None => {
                     error!("No matching cookie for assign: {cookie}");
@@ -563,7 +587,9 @@ impl Notify {
             match self.nfy_find_matching_cookie(entry_index, *cookie) {
                 Some(mapping_index) => {
                     let mapping = &mut self.entries[entry_index].mappings[mapping_index];
-                    self.global_bitmap &= !(1 << mapping.id);
+                    if let Some(bit) = nfy_bitmask(mapping.id) {
+                        self.global_bitmap &= !bit;
+                    }
                     mapping.id = 0;
                     mapping.ntype = NotifyType::Global;
                     // Keep in_use = true and cookie — slot is reserved, just unassigned
@@ -599,7 +625,15 @@ impl Service for Notify {
         let req: NotifyReq = msg.clone().into();
         debug!("Received notify command: {:?}", req.msg_info.message_id());
 
-        let payload = match req.msg_info.message_id() {
+        let message_id = match req.msg_info.message_id() {
+            Some(id) => id,
+            None => {
+                error!("Invalid notify message ID: {}", req.msg_info.0 & 0b111);
+                return Err(odp_ffa::Error::Other("Invalid notify message ID"));
+            }
+        };
+
+        let payload = match message_id {
             MessageID::Setup => DirectMessagePayload::from(self.nfy_setup(req)),
             MessageID::Destroy => DirectMessagePayload::from(self.nfy_destroy(req)),
             MessageID::Add => DirectMessagePayload::from(self.nfy_add(req)),
