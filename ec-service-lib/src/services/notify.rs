@@ -426,6 +426,169 @@ impl Notify {
             status: res,
         }
     }
+
+    fn nfy_add(&mut self, req: NotifyReq) -> NfySetupRsp {
+        if req.count == 0 || req.count >= NOTIFY_MAX_MAPPINGS_PER_REQ as u8 {
+            return NfySetupRsp {
+                reserved: 0,
+                sender_uuid: req.sender_uuid,
+                receiver_uuid: req.receiver_uuid,
+                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
+                status: ErrorCode::InvalidParameters,
+            };
+        }
+
+        let entry_index = if let Some(idx) = self.nfy_find_entry(req.receiver_uuid) {
+            idx
+        } else if let Some(empty) = self.nfy_find_empty_slot() {
+            self.entries[empty].in_use = true;
+            self.entries[empty].service_uuid = req.receiver_uuid;
+            self.entries[empty].mappings = [NfyMapping::default(); NOTIFY_MAX_MAPPINGS];
+            empty
+        } else {
+            return NfySetupRsp {
+                reserved: 0,
+                sender_uuid: req.sender_uuid,
+                receiver_uuid: req.receiver_uuid,
+                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
+                status: ErrorCode::NoMemory,
+            };
+        };
+
+        let res = self.nfy_register_mapping(entry_index, req);
+        NfySetupRsp {
+            reserved: 0,
+            sender_uuid: req.sender_uuid,
+            receiver_uuid: req.receiver_uuid,
+            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
+            status: res,
+        }
+    }
+
+    fn nfy_remove(&mut self, req: NotifyReq) -> NfySetupRsp {
+        let entry = match self.nfy_find_entry(req.receiver_uuid) {
+            Some(idx) => idx,
+            None => {
+                return NfySetupRsp {
+                    reserved: 0,
+                    sender_uuid: req.sender_uuid,
+                    receiver_uuid: req.receiver_uuid,
+                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Remove as u64,
+                    status: ErrorCode::InvalidParameters,
+                };
+            }
+        };
+
+        let res = self.nfy_unregister_mapping(entry, req);
+        NfySetupRsp {
+            reserved: 0,
+            sender_uuid: req.sender_uuid,
+            receiver_uuid: req.receiver_uuid,
+            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Remove as u64,
+            status: res,
+        }
+    }
+
+    fn nfy_assign(&mut self, req: NotifyReq) -> NfySetupRsp {
+        let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
+            Some(idx) => idx,
+            None => {
+                return NfySetupRsp {
+                    reserved: 0,
+                    sender_uuid: req.sender_uuid,
+                    receiver_uuid: req.receiver_uuid,
+                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                    status: ErrorCode::InvalidParameters,
+                };
+            }
+        };
+
+        for (cookie, id, ntype) in req.notifications.iter().take(req.count as usize) {
+            match self.nfy_find_matching_cookie(entry_index, *cookie) {
+                Some(mapping_index) => {
+                    let mapping = &mut self.entries[entry_index].mappings[mapping_index];
+                    // Clear old bit, set new bit
+                    self.global_bitmap &= !(1 << mapping.id);
+                    if self.global_bitmap & (1 << id) != 0 {
+                        error!("Bitmask conflict during assign for id: {id}");
+                        return NfySetupRsp {
+                            reserved: 0,
+                            sender_uuid: req.sender_uuid,
+                            receiver_uuid: req.receiver_uuid,
+                            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                            status: ErrorCode::InvalidParameters,
+                        };
+                    }
+                    mapping.id = *id;
+                    mapping.ntype = *ntype;
+                    self.global_bitmap |= 1 << id;
+                }
+                None => {
+                    error!("No matching cookie for assign: {cookie}");
+                    return NfySetupRsp {
+                        reserved: 0,
+                        sender_uuid: req.sender_uuid,
+                        receiver_uuid: req.receiver_uuid,
+                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+                        status: ErrorCode::InvalidParameters,
+                    };
+                }
+            }
+        }
+
+        NfySetupRsp {
+            reserved: 0,
+            sender_uuid: req.sender_uuid,
+            receiver_uuid: req.receiver_uuid,
+            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
+            status: ErrorCode::Ok,
+        }
+    }
+
+    fn nfy_unassign(&mut self, req: NotifyReq) -> NfySetupRsp {
+        let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
+            Some(idx) => idx,
+            None => {
+                return NfySetupRsp {
+                    reserved: 0,
+                    sender_uuid: req.sender_uuid,
+                    receiver_uuid: req.receiver_uuid,
+                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
+                    status: ErrorCode::InvalidParameters,
+                };
+            }
+        };
+
+        for (cookie, _id, _ntype) in req.notifications.iter().take(req.count as usize) {
+            match self.nfy_find_matching_cookie(entry_index, *cookie) {
+                Some(mapping_index) => {
+                    let mapping = &mut self.entries[entry_index].mappings[mapping_index];
+                    self.global_bitmap &= !(1 << mapping.id);
+                    mapping.id = 0;
+                    mapping.ntype = NotifyType::Global;
+                    // Keep in_use = true and cookie — slot is reserved, just unassigned
+                }
+                None => {
+                    error!("No matching cookie for unassign: {cookie}");
+                    return NfySetupRsp {
+                        reserved: 0,
+                        sender_uuid: req.sender_uuid,
+                        receiver_uuid: req.receiver_uuid,
+                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
+                        status: ErrorCode::InvalidParameters,
+                    };
+                }
+            }
+        }
+
+        NfySetupRsp {
+            reserved: 0,
+            sender_uuid: req.sender_uuid,
+            receiver_uuid: req.receiver_uuid,
+            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
+            status: ErrorCode::Ok,
+        }
+    }
 }
 
 impl Service for Notify {
@@ -439,13 +602,10 @@ impl Service for Notify {
         let payload = match req.msg_info.message_id() {
             MessageID::Setup => DirectMessagePayload::from(self.nfy_setup(req)),
             MessageID::Destroy => DirectMessagePayload::from(self.nfy_destroy(req)),
-            MessageID::Add | MessageID::Remove | MessageID::Assign | MessageID::Unassign => {
-                // For Add, Remove, Assign, and Unassign, we just return unsupported
-                NfyGenericRsp {
-                    status: ErrorCode::NotSupported as i64,
-                }
-                .into()
-            }
+            MessageID::Add => DirectMessagePayload::from(self.nfy_add(req)),
+            MessageID::Remove => DirectMessagePayload::from(self.nfy_remove(req)),
+            MessageID::Assign => DirectMessagePayload::from(self.nfy_assign(req)),
+            MessageID::Unassign => DirectMessagePayload::from(self.nfy_unassign(req)),
         };
 
         Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
