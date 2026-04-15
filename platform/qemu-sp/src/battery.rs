@@ -21,17 +21,6 @@ const EC_BAT_GET_BMA: u8 = 0xe;
 const EC_BAT_GET_STA: u8 = 0xf;
 
 #[derive(Default)]
-struct GenericRsp {
-    status: i64,
-}
-
-impl From<GenericRsp> for DirectMessagePayload {
-    fn from(value: GenericRsp) -> Self {
-        DirectMessagePayload::from_iter(value.status.to_le_bytes())
-    }
-}
-
-#[derive(Default)]
 struct BstRsp {
     state: u32,
     present_rate: u32,
@@ -271,6 +260,22 @@ impl Battery {
         }
     }
 
+    fn get_bix(&self, _msg: &MsgSendDirectReq2) -> BixRsp {
+        BixRsp {
+            events: self.events,
+            status: self.status,
+            last_full_charge: self.last_full_charge,
+            cycle_count: self.cycle_count,
+            state: self.state,
+            present_rate: self.present_rate,
+            remain_cap: self.remain_cap,
+            present_volt: self.present_volt,
+            psr_state: self.psr_state,
+            psr_max_out: self.psr_max_out,
+            psr_max_in: self.psr_max_in,
+        }
+    }
+
     fn get_bst(&self, _msg: &MsgSendDirectReq2) -> BstRsp {
         BstRsp {
             state: self.state,
@@ -280,8 +285,72 @@ impl Battery {
         }
     }
 
-    fn generic_test(&self, _msg: &MsgSendDirectReq2) -> GenericRsp {
-        GenericRsp { status: 0x0 }
+    fn get_psr(&self, _msg: &MsgSendDirectReq2) -> PsrRsp {
+        PsrRsp {
+            psr_state: self.psr_state,
+        }
+    }
+
+    fn get_pif(&self, _msg: &MsgSendDirectReq2) -> PifRsp {
+        PifRsp {
+            max_power: self.pif_max_power,
+        }
+    }
+
+    fn get_bps(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.bps_status }
+    }
+
+    fn handle_btp(&mut self, msg: &MsgSendDirectReq2) -> ValueRsp {
+        let set_value = msg.payload().u32_at(4);
+        if set_value != 0 {
+            self.trip_thres = set_value;
+        }
+        ValueRsp { value: self.trip_thres }
+    }
+
+    fn get_bpt(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.peak_thres }
+    }
+
+    fn get_bpc(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.peak_level }
+    }
+
+    fn handle_bmc(&mut self, msg: &MsgSendDirectReq2) -> ValueRsp {
+        let set_value = msg.payload().u32_at(4);
+        if set_value != 0 {
+            self.bmc_data = set_value;
+        }
+        ValueRsp { value: self.bmc_data }
+    }
+
+    fn get_bmd(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.bmd_data }
+    }
+
+    fn get_bct(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp {
+            value: self.charge_time,
+        }
+    }
+
+    fn get_btm(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.btm_temp }
+    }
+
+    fn get_bms(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.bms_data }
+    }
+
+    fn get_bma(&self, _msg: &MsgSendDirectReq2) -> ValueRsp {
+        ValueRsp { value: self.bma_data }
+    }
+
+    fn get_sta(&self, _msg: &MsgSendDirectReq2) -> StaRsp {
+        StaRsp {
+            sta_status: self.sta_status,
+        }
     }
 }
 
@@ -294,21 +363,21 @@ impl Service for Battery {
         debug!("Received Battery command 0x{:x}", cmd);
 
         let payload = match cmd {
-            EC_BAT_GET_BIX => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_BIX => DirectMessagePayload::from(self.get_bix(&msg)),
             EC_BAT_GET_BST => DirectMessagePayload::from(self.get_bst(&msg)),
-            EC_BAT_GET_PSR => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_PIF => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPS => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BTP => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPT => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BPC => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMC => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMD => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BCT => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BTM => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMS => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_BMA => DirectMessagePayload::from(self.generic_test(&msg)),
-            EC_BAT_GET_STA => DirectMessagePayload::from(self.generic_test(&msg)),
+            EC_BAT_GET_PSR => DirectMessagePayload::from(self.get_psr(&msg)),
+            EC_BAT_GET_PIF => DirectMessagePayload::from(self.get_pif(&msg)),
+            EC_BAT_GET_BPS => DirectMessagePayload::from(self.get_bps(&msg)),
+            EC_BAT_GET_BTP => DirectMessagePayload::from(self.handle_btp(&msg)),
+            EC_BAT_GET_BPT => DirectMessagePayload::from(self.get_bpt(&msg)),
+            EC_BAT_GET_BPC => DirectMessagePayload::from(self.get_bpc(&msg)),
+            EC_BAT_GET_BMC => DirectMessagePayload::from(self.handle_bmc(&msg)),
+            EC_BAT_GET_BMD => DirectMessagePayload::from(self.get_bmd(&msg)),
+            EC_BAT_GET_BCT => DirectMessagePayload::from(self.get_bct(&msg)),
+            EC_BAT_GET_BTM => DirectMessagePayload::from(self.get_btm(&msg)),
+            EC_BAT_GET_BMS => DirectMessagePayload::from(self.get_bms(&msg)),
+            EC_BAT_GET_BMA => DirectMessagePayload::from(self.get_bma(&msg)),
+            EC_BAT_GET_STA => DirectMessagePayload::from(self.get_sta(&msg)),
             _ => {
                 error!("Unknown Battery Command: {}", cmd);
                 return Err(odp_ffa::Error::Other("Unknown Battery Command"));
