@@ -556,4 +556,58 @@ mod tests {
         let sta = StaRsp::from(resp.payload());
         assert_eq!(sta.sta_status, 0x1F);
     }
+
+    #[test]
+    fn test_btp_set_get_round_trip() {
+        let mut bat = Battery::new();
+        // Set trip_thres to 25 via payload value at offset 4
+        let resp = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BTP, 25))
+            .unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 25);
+        // Get without set value — should return the persisted value
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BTP)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 25);
+    }
+
+    #[test]
+    fn test_bmc_set_get_round_trip() {
+        let mut bat = Battery::new();
+        // Set bmc_data to 0x42
+        let resp = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BMC, 0x42))
+            .unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0x42);
+        // Get without set — verify persistence
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMC)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0x42);
+    }
+
+    #[test]
+    fn test_btp_set_overwrites_previous() {
+        let mut bat = Battery::new();
+        // Set to 50
+        let _ = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BTP, 50))
+            .unwrap();
+        // Overwrite to 75
+        let _ = bat
+            .ffa_msg_send_direct_req2(bat_req_with_value(EC_BAT_GET_BTP, 75))
+            .unwrap();
+        // Verify latest value
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BTP)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 75);
+    }
+
+    #[test]
+    fn test_unknown_command_returns_error() {
+        let mut bat = Battery::new();
+        let result = bat.ffa_msg_send_direct_req2(bat_req(0xFF));
+        assert!(result.is_err());
+    }
 }
