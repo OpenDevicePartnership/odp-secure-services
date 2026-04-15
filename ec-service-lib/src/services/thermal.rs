@@ -308,6 +308,11 @@ impl Thermal {
             req.id, req.len, req.var_uuid, req.data
         );
 
+        if req.len != 4 {
+            error!("set_variable only supports DWORD write");
+            return GenericRsp { status: -1 };
+        }
+
         // Upsert: check if UUID already exists
         for i in 0..self.var_count {
             if self.variables[i].0 == req.var_uuid {
