@@ -393,6 +393,19 @@ mod tests {
     use super::*;
     use odp_ffa::HasRegisterPayload;
 
+    /// Build a battery request with just the opcode command byte.
+    fn bat_req(cmd: u8) -> MsgSendDirectReq2 {
+        MsgSendDirectReq2::new(0, 0, Battery::UUID, DirectMessagePayload::from_iter(vec![cmd]))
+    }
+
+    /// Build a battery request with opcode + u32 value at offset 4 (for BTP/BMC set operations).
+    fn bat_req_with_value(cmd: u8, value: u32) -> MsgSendDirectReq2 {
+        let mut bytes = [0u8; 14 * 8];
+        bytes[0] = cmd;
+        bytes[4..8].copy_from_slice(&value.to_le_bytes());
+        MsgSendDirectReq2::new(0, 0, Battery::UUID, DirectMessagePayload::from_iter(bytes))
+    }
+
     #[test]
     fn battery_get_bst_works() {
         let mut bat = Battery::new();
@@ -409,5 +422,138 @@ mod tests {
         assert_eq!(bst.present_rate, 500);
         assert_eq!(bst.remaining_cap, 5000);
         assert_eq!(bst.present_volt, 12000);
+    }
+
+    #[test]
+    fn test_get_bix() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BIX)).unwrap();
+        let bix = BixRsp::from(resp.payload());
+        assert_eq!(bix.events, 0);
+        assert_eq!(bix.status, 0);
+        assert_eq!(bix.last_full_charge, 4500);
+        assert_eq!(bix.cycle_count, 42);
+        assert_eq!(bix.state, 0x1);
+        assert_eq!(bix.present_rate, 500);
+        assert_eq!(bix.remain_cap, 5000);
+        assert_eq!(bix.present_volt, 12000);
+        assert_eq!(bix.psr_state, 0x1);
+        assert_eq!(bix.psr_max_out, 65000);
+        assert_eq!(bix.psr_max_in, 0);
+    }
+
+    #[test]
+    fn test_get_bst_from_state() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BST)).unwrap();
+        let bst = BstRsp::from(resp.payload());
+        assert_eq!(bst.state, 0x1);
+        assert_eq!(bst.present_rate, 500);
+        assert_eq!(bst.remaining_cap, 5000);
+        assert_eq!(bst.present_volt, 12000);
+    }
+
+    #[test]
+    fn test_get_psr() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_PSR)).unwrap();
+        let psr = PsrRsp::from(resp.payload());
+        assert_eq!(psr.psr_state, 0x1);
+    }
+
+    #[test]
+    fn test_get_pif() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_PIF)).unwrap();
+        let pif = PifRsp::from(resp.payload());
+        assert_eq!(pif.max_power, 65000);
+    }
+
+    #[test]
+    fn test_get_bps() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BPS)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0x1);
+    }
+
+    #[test]
+    fn test_get_btp_default() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BTP)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 10);
+    }
+
+    #[test]
+    fn test_get_bpt() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BPT)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 80);
+    }
+
+    #[test]
+    fn test_get_bpc() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BPC)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 100);
+    }
+
+    #[test]
+    fn test_get_bmc_default() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMC)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+    }
+
+    #[test]
+    fn test_get_bmd() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMD)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+    }
+
+    #[test]
+    fn test_get_bct() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BCT)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 120);
+    }
+
+    #[test]
+    fn test_get_btm() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BTM)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 2980);
+    }
+
+    #[test]
+    fn test_get_bms() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMS)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0x1);
+    }
+
+    #[test]
+    fn test_get_bma() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_BMA)).unwrap();
+        let val = ValueRsp::from(resp.payload());
+        assert_eq!(val.value, 0);
+    }
+
+    #[test]
+    fn test_get_sta() {
+        let mut bat = Battery::new();
+        let resp = bat.ffa_msg_send_direct_req2(bat_req(EC_BAT_GET_STA)).unwrap();
+        let sta = StaRsp::from(resp.payload());
+        assert_eq!(sta.sta_status, 0x1F);
     }
 }
