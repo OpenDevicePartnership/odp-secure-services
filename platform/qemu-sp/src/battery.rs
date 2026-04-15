@@ -53,7 +53,7 @@ struct BixRsp {
     cycle_count: u32,
     state: u32,
     present_rate: u32,
-    remain_cap: u32,
+    remaining_cap: u32,
     present_volt: u32,
     psr_state: u32,
     psr_max_out: u32,
@@ -69,7 +69,7 @@ impl From<BixRsp> for DirectMessagePayload {
             value.cycle_count,
             value.state,
             value.present_rate,
-            value.remain_cap,
+            value.remaining_cap,
             value.present_volt,
             value.psr_state,
             value.psr_max_out,
@@ -88,7 +88,7 @@ impl From<&DirectMessagePayload> for BixRsp {
             cycle_count: payload.u32_at(12),
             state: payload.u32_at(16),
             present_rate: payload.u32_at(20),
-            remain_cap: payload.u32_at(24),
+            remaining_cap: payload.u32_at(24),
             present_volt: payload.u32_at(28),
             psr_state: payload.u32_at(32),
             psr_max_out: payload.u32_at(36),
@@ -179,7 +179,7 @@ pub struct Battery {
     // BST fields (used by get_bst)
     state: u32,
     present_rate: u32,
-    remain_cap: u32,
+    remaining_cap: u32,
     present_volt: u32,
     // PSR fields
     psr_state: u32,
@@ -232,7 +232,7 @@ impl Battery {
             cycle_count: 42,
             state: 0x1,          // discharging
             present_rate: 500,   // mW draw
-            remain_cap: 5000,    // mWh remaining
+            remaining_cap: 5000, // mWh remaining
             present_volt: 12000, // 12V in mV
             psr_state: 0x1,      // AC adapter present
             psr_max_out: 65000,  // 65W max output (mW)
@@ -268,7 +268,7 @@ impl Battery {
             cycle_count: self.cycle_count,
             state: self.state,
             present_rate: self.present_rate,
-            remain_cap: self.remain_cap,
+            remaining_cap: self.remaining_cap,
             present_volt: self.present_volt,
             psr_state: self.psr_state,
             psr_max_out: self.psr_max_out,
@@ -280,7 +280,7 @@ impl Battery {
         BstRsp {
             state: self.state,
             present_rate: self.present_rate,
-            remaining_cap: self.remain_cap,
+            remaining_cap: self.remaining_cap,
             present_volt: self.present_volt,
         }
     }
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(bix.cycle_count, 42);
         assert_eq!(bix.state, 0x1);
         assert_eq!(bix.present_rate, 500);
-        assert_eq!(bix.remain_cap, 5000);
+        assert_eq!(bix.remaining_cap, 5000);
         assert_eq!(bix.present_volt, 12000);
         assert_eq!(bix.psr_state, 0x1);
         assert_eq!(bix.psr_max_out, 65000);
