@@ -43,11 +43,17 @@ check_rustup_target "aarch64-unknown-none"
 set -x
 
 # cargo deny --log-level=warn check
-cargo clippy --target=aarch64-unknown-none -p ihv1-ec-sp -p qemu-ec-sp
-cargo clippy
+cargo clippy --target=aarch64-unknown-none -p ihv1-ec-sp -p qemu-ec-sp -- -D warnings
+cargo clippy -- -D warnings
 cargo fmt --check
 cargo hack check --feature-powerset --exclude=ihv1-ec-sp --exclude=qemu-ec-sp
 cargo hack check --feature-powerset --target=aarch64-unknown-none
-cargo test -q
+HOST_TARGET=$(rustc -vV | sed -n 's/host: //p')
+if [ -z "$HOST_TARGET" ]; then
+    echo "Failed to determine Rust host target from \`rustc -vV\` output."
+    echo "Please verify that \`rustc -vV\` prints a valid \`host:\` line."
+    exit 1
+fi
+cargo test --target "$HOST_TARGET" -q
 cd "$PROJECT_DIR/platform/qemu-sp" && cargo build --target=aarch64-unknown-none
 cd "$PROJECT_DIR/platform/ihv1-sp" && cargo build --target=aarch64-unknown-none
