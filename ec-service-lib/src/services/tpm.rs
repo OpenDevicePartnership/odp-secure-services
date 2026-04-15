@@ -646,6 +646,7 @@ impl<S: TpmSstOps> TpmService<S> {
     ///   2 = crb_control_request = CMD_READY
     ///   3 = crb_control_request = GO_IDLE
     ///   4 = crb_control_start = START
+    ///   5 = prepare TPM2_Startup command in CRB data buffer
     #[cfg(feature = "test-bypass-locality-check")]
     fn test_write_crb(&mut self, request: &TpmRequest) -> TpmStatus {
         let operation = request.function as u16;
@@ -663,6 +664,14 @@ impl<S: TpmSstOps> TpmService<S> {
             2 => crb.crb_control_request = PTP_CRB_CONTROL_AREA_REQUEST_COMMAND_READY,
             3 => crb.crb_control_request = PTP_CRB_CONTROL_AREA_REQUEST_GO_IDLE,
             4 => crb.crb_control_start = PTP_CRB_CONTROL_START,
+            5 => {
+                // Write a TPM2_Startup(CLEAR) command into the CRB data buffer.
+                // TPM2_Startup header (big-endian):
+                //   tag=0x8001, size=12, code=0x144, startupType=0x0000
+                let tpm2_startup: [u8; 12] = [0x80, 0x01, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00];
+                crb.crb_data_buffer[..12].copy_from_slice(&tpm2_startup);
+                crb.crb_control_command_size = 12;
+            }
             _ => {
                 error!("test_write_crb: Invalid Operation");
                 return TpmStatus::InvArg;
