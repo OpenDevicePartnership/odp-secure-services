@@ -422,15 +422,6 @@ mod tests {
         DirectMessagePayload::from_iter(bytes)
     }
 
-    /// Build a get_temperature request payload.
-    /// Layout: byte 0=EC_THM_GET_TMP(0x1), byte 1=sensor_id.
-    fn get_temperature_payload(sensor_id: u8) -> DirectMessagePayload {
-        let mut bytes = [0u8; 14 * 8];
-        bytes[0] = EC_THM_GET_TMP;
-        bytes[1] = sensor_id;
-        DirectMessagePayload::from_iter(bytes)
-    }
-
     /// Build a set_variable request payload.
     /// Layout: byte 0=EC_THM_SET_VAR(0x6), byte 1=instance_id, bytes 2-3=length(u16 LE),
     ///         bytes 4-19=UUID(16 bytes LE), bytes 20-23=data(u32 LE).
@@ -524,5 +515,199 @@ mod tests {
         let payload = DirectMessagePayload::from(rsp);
         assert_eq!(payload.u64_at(0) as i64, 0, "status should be 0");
         assert_eq!(payload.u64_at(8), 0x1234, "temperature should be 0x1234");
+    }
+
+    // ===================================================================
+    // Edge Case Tests
+    // ===================================================================
+
+    #[test]
+    fn test_get_threshold_unset_sensor_returns_zeroed_defaults() {
+        let mut thermal = Thermal::new();
+
+        // Query sensor 0 without setting anything
+        let msg = thermal_req(get_threshold_payload(0));
+        let resp = thermal.ffa_msg_send_direct_req2(msg).unwrap();
+        let p = resp.payload();
+        assert_eq!(p.u64_at(0) as i64, 0, "status should be 0 for unset sensor");
+        assert_eq!(p.u32_at(8), 0, "timeout should be 0 for unset sensor");
+        assert_eq!(p.u32_at(12), 0, "low_temp should be 0 for unset sensor");
+        assert_eq!(p.u32_at(16), 0, "high_temp should be 0 for unset sensor");
+    }
+
+    #[test]
+    fn test_get_variable_unknown_uuid_returns_error() {
+        let mut thermal = Thermal::new();
+        let unknown_uuid = uuid!("00000000-0000-0000-0000-000000000001");
+
+        let msg = thermal_req(get_variable_payload(&unknown_uuid));
+        let resp = thermal.ffa_msg_send_direct_req2(msg).unwrap();
+        let p = resp.payload();
+        assert_eq!(p.u64_at(0) as i64, -1, "status should be -1 for unknown UUID");
+        assert_eq!(p.u32_at(8), 0, "data should be 0 for unknown UUID");
+    }
+
+    #[test]
+    fn test_set_threshold_upsert_overwrites() {
+        let mut thermal = Thermal::new();
+        let sensor_id = 1u8;
+
+        // Set initial values
+        let msg1 = thermal_req(set_threshold_payload(sensor_id, 100, 10, 50));
+        thermal.ffa_msg_send_direct_req2(msg1).unwrap();
+
+        // Overwrite with new values
+        let msg2 = thermal_req(set_threshold_payload(sensor_id, 200, 20, 90));
+        thermal.ffa_msg_send_direct_req2(msg2).unwrap();
+
+        // Get should return the latest values
+        let get_msg = thermal_req(get_threshold_payload(sensor_id));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        let p = resp.payload();
+        assert_eq!(p.u64_at(0) as i64, 0);
+        assert_eq!(p.u32_at(8), 200, "timeout should be updated value");
+        assert_eq!(p.u32_at(12), 20, "low_temp should be updated value");
+        assert_eq!(p.u32_at(16), 90, "high_temp should be updated value");
+    }
+
+    #[test]
+    fn test_set_variable_upsert_overwrites() {
+        let mut thermal = Thermal::new();
+        let var_uuid = uuid!("11111111-2222-3333-4444-555555555555");
+
+        // Set initial value
+        let msg1 = thermal_req(set_variable_payload(&var_uuid, 100));
+        thermal.ffa_msg_send_direct_req2(msg1).unwrap();
+
+        // Overwrite with new value
+        let msg2 = thermal_req(set_variable_payload(&var_uuid, 200));
+        thermal.ffa_msg_send_direct_req2(msg2).unwrap();
+
+        // Get should return the latest value
+        let get_msg = thermal_req(get_variable_payload(&var_uuid));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(resp.payload().u32_at(8), 200, "data should be updated value");
+    }
+
+    #[test]
+    fn test_variable_store_lru_eviction() {
+        let mut thermal = Thermal::new();
+
+        // Fill all 16 slots with unique UUIDs
+        for i in 0..MAX_VARS {
+            let mut uuid_bytes = [0u8; 16];
+            uuid_bytes[0] = i as u8;
+            let var_uuid = Builder::from_slice_le(&uuid_bytes).unwrap().into_uuid();
+            let msg = thermal_req(set_variable_payload(&var_uuid, i as u32));
+            thermal.ffa_msg_send_direct_req2(msg).unwrap();
+        }
+
+        // Verify slot 0 (UUID with byte[0]=0) is accessible
+        let mut uuid0_bytes = [0u8; 16];
+        uuid0_bytes[0] = 0;
+        let uuid0 = Builder::from_slice_le(&uuid0_bytes).unwrap().into_uuid();
+        let get_msg = thermal_req(get_variable_payload(&uuid0));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(
+            resp.payload().u64_at(0) as i64,
+            0,
+            "uuid0 should be found before eviction"
+        );
+        assert_eq!(resp.payload().u32_at(8), 0, "uuid0 data should be 0");
+
+        // Insert one more (UUID with byte[0]=0xFF) — should evict oldest
+        // uuid0 was set first but we just touched it via get_variable above,
+        // so uuid1 (byte[0]=1, set second, never touched since) is the LRU entry.
+        let mut new_uuid_bytes = [0u8; 16];
+        new_uuid_bytes[0] = 0xFF;
+        let new_uuid = Builder::from_slice_le(&new_uuid_bytes).unwrap().into_uuid();
+        let msg = thermal_req(set_variable_payload(&new_uuid, 999));
+        thermal.ffa_msg_send_direct_req2(msg).unwrap();
+
+        // uuid1 should now be evicted (it was the true LRU — set second, never accessed)
+        let mut uuid1_bytes = [0u8; 16];
+        uuid1_bytes[0] = 1;
+        let uuid1 = Builder::from_slice_le(&uuid1_bytes).unwrap().into_uuid();
+        let get_msg = thermal_req(get_variable_payload(&uuid1));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(
+            resp.payload().u64_at(0) as i64,
+            -1,
+            "uuid1 should be evicted (true LRU)"
+        );
+
+        // uuid0 should still be present (it was touched by the get_variable above)
+        let get_msg = thermal_req(get_variable_payload(&uuid0));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(
+            resp.payload().u64_at(0) as i64,
+            0,
+            "uuid0 should still be found (touched after initial set)"
+        );
+
+        // New UUID should be accessible
+        let get_msg = thermal_req(get_variable_payload(&new_uuid));
+        let resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(resp.payload().u64_at(0) as i64, 0, "new uuid should be found");
+        assert_eq!(resp.payload().u32_at(8), 999, "new uuid data should be 999");
+    }
+
+    #[test]
+    fn test_threshold_sensor_id_out_of_bounds() {
+        let mut thermal = Thermal::new();
+
+        // sensor_id = 8 (MAX_SENSORS) should fail
+        let set_msg = thermal_req(set_threshold_payload(8, 100, 10, 50));
+        let set_resp = thermal.ffa_msg_send_direct_req2(set_msg).unwrap();
+        assert_eq!(resp_status(&set_resp), -1, "set with sensor_id=8 should return -1");
+
+        // get_threshold with sensor_id=8 should also fail
+        let get_msg = thermal_req(get_threshold_payload(8));
+        let get_resp = thermal.ffa_msg_send_direct_req2(get_msg).unwrap();
+        assert_eq!(resp_status(&get_resp), -1, "get with sensor_id=8 should return -1");
+
+        // sensor_id = 255 should also fail
+        let set_msg = thermal_req(set_threshold_payload(255, 100, 10, 50));
+        let set_resp = thermal.ffa_msg_send_direct_req2(set_msg).unwrap();
+        assert_eq!(resp_status(&set_resp), -1, "set with sensor_id=255 should return -1");
+    }
+
+    #[test]
+    fn test_multiple_sensors_independent() {
+        let mut thermal = Thermal::new();
+
+        // Set thresholds for sensor 0 and sensor 3 with different values
+        let msg0 = thermal_req(set_threshold_payload(0, 100, 10, 50));
+        thermal.ffa_msg_send_direct_req2(msg0).unwrap();
+
+        let msg3 = thermal_req(set_threshold_payload(3, 200, 20, 90));
+        thermal.ffa_msg_send_direct_req2(msg3).unwrap();
+
+        // Verify sensor 0 has its own values
+        let get0 = thermal_req(get_threshold_payload(0));
+        let resp0 = thermal.ffa_msg_send_direct_req2(get0).unwrap();
+        assert_eq!(resp0.payload().u32_at(8), 100, "sensor 0 timeout");
+        assert_eq!(resp0.payload().u32_at(12), 10, "sensor 0 low_temp");
+        assert_eq!(resp0.payload().u32_at(16), 50, "sensor 0 high_temp");
+
+        // Verify sensor 3 has its own values
+        let get3 = thermal_req(get_threshold_payload(3));
+        let resp3 = thermal.ffa_msg_send_direct_req2(get3).unwrap();
+        assert_eq!(resp3.payload().u32_at(8), 200, "sensor 3 timeout");
+        assert_eq!(resp3.payload().u32_at(12), 20, "sensor 3 low_temp");
+        assert_eq!(resp3.payload().u32_at(16), 90, "sensor 3 high_temp");
+    }
+
+    #[test]
+    fn test_cooling_policy_sensor_id_out_of_bounds() {
+        let mut thermal = Thermal::new();
+
+        let msg = thermal_req(set_cooling_policy_payload(8, 1));
+        let resp = thermal.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(
+            resp_status(&resp),
+            -1,
+            "cooling policy with sensor_id=8 should return -1"
+        );
     }
 }
