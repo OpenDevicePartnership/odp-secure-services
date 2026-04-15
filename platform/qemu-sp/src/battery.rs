@@ -302,9 +302,11 @@ impl Battery {
     }
 
     fn handle_btp(&mut self, msg: &MsgSendDirectReq2) -> ValueRsp {
-        let set_value = msg.payload().u32_at(4);
-        if set_value != 0 {
-            self.trip_thres = set_value;
+        // Byte 8 is a set flag: non-zero means "store the value at offset 4"
+        // This allows setting trip_thres to 0 (disable trip point per ACPI)
+        let set_flag = msg.payload().u8_at(8);
+        if set_flag != 0 {
+            self.trip_thres = msg.payload().u32_at(4);
         }
         ValueRsp { value: self.trip_thres }
     }
@@ -318,9 +320,9 @@ impl Battery {
     }
 
     fn handle_bmc(&mut self, msg: &MsgSendDirectReq2) -> ValueRsp {
-        let set_value = msg.payload().u32_at(4);
-        if set_value != 0 {
-            self.bmc_data = set_value;
+        let set_flag = msg.payload().u8_at(8);
+        if set_flag != 0 {
+            self.bmc_data = msg.payload().u32_at(4);
         }
         ValueRsp { value: self.bmc_data }
     }
@@ -399,10 +401,12 @@ mod tests {
     }
 
     /// Build a battery request with opcode + u32 value at offset 4 (for BTP/BMC set operations).
+    /// Sets a flag byte at offset 8 to indicate "store this value".
     fn bat_req_with_value(cmd: u8, value: u32) -> MsgSendDirectReq2 {
         let mut bytes = [0u8; 14 * 8];
         bytes[0] = cmd;
         bytes[4..8].copy_from_slice(&value.to_le_bytes());
+        bytes[8] = 1; // set flag
         MsgSendDirectReq2::new(0, 0, Battery::UUID, DirectMessagePayload::from_iter(bytes))
     }
 
