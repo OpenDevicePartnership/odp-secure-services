@@ -3,6 +3,7 @@ name = "ec-service-lib"
 categories = ["embedded", "no-std"]
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license = "MIT"
 description = "Provides standard EC services to OS"
 readme = "README.md"

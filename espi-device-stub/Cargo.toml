@@ -2,6 +2,7 @@
 name = "espi-device-stub"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 authors = ["Dylan Knutson <dylanknutson@microsoft.com>"]
 license = "MIT"
 description = "Stub implementation of the eSPI driver"
