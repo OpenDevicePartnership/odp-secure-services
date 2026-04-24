@@ -9,6 +9,7 @@ members = [
     "platform/ihv1-sp",
     "platform/qemu-sp",
     "aarch64-haf",
+    "sp-mctp-framer",
 ]
 
 [workspace.package]

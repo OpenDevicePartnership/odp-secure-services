@@ -1,0 +1,17 @@
+[package]
+name = "sp-mctp-framer"
+categories = ["embedded", "no-std"]
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license = "MIT"
+description = "SP-side MCTP framer over SmbusEspiMedium for SP↔EC interop"
+
+[dependencies]
+mctp-rs.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+
+[lints]
+workspace = true
