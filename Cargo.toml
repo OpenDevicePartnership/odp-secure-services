@@ -34,8 +34,9 @@ espi-device-stub = { path = "espi-device-stub" }
 odp-ffa = { path = "odp-ffa" }
 hafnium = { path = "hafnium" }
 log = { version = "0.4", default-features = false }
+mctp-rs = { git = "https://github.com/dymk/mctp-rs", rev = "3d941ba5205ca7781bf37e3dc7c5dfdc99a082d6", default-features = false }
 mockall = "0.13.1"
-num_enum = { version = "0.7.3", default-features = false }
+num_enum = { version = "0.7.4", default-features = false }
 num-traits = { version = "0.2.19", default-features = false }
 subenum = { version = "1.1.2", default-features = false }
 uuid = { version = "1.0", default-features = false, features = ["v1"] }
