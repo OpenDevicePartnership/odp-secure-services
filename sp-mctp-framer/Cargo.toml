@@ -1,17 +1,29 @@
 [package]
 name = "sp-mctp-framer"
-categories = ["embedded", "no-std"]
 version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
 license = "MIT"
 description = "SP-side MCTP framer over SmbusEspiMedium for SP↔EC interop"
+repository = "https://github.com/OpenDevicePartnership/odp-secure-services"
+readme = "README.md"
+keywords = ["mctp", "smbus", "no-std", "embedded", "sp"]
+categories = ["embedded", "no-std"]
+
+[features]
+# Re-export Phase 12 golden capture fixtures for downstream test suites
+# (e.g. `mod/secure-services/platform/src/mctp_ping.rs` host tests). Keeps
+# the wire-format goldens in a single place — see lib.rs::test_fixtures.
+test-fixtures = []
 
 [dependencies]
 mctp-rs.workspace = true
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

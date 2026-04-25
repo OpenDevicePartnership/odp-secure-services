@@ -1,10 +1,10 @@
 //! SP-side MCTP framer over `SmbusEspiMedium` for SP↔EC interop.
 //!
 //! Mirrors EC's `embedded-services::uart-service` framing byte-for-byte
-//! (verified by the Phase 12 spike capture; see
-//! `.planning/phases/12-spike-mctp-uart-ping/12-VERDICT.md`).
+//! (verified against captured wire bytes from a successful SP→EC→SP
+//! ping-pong on the QEMU SBSA secure UART at `0x60030000`).
 //!
-//! Runtime path uses only stack/static buffers — no heap (MF-03).
+//! Runtime path uses only stack/static buffers — no heap.
 
 #![no_std]
 
@@ -20,8 +20,8 @@ use mctp_rs::{
 // Wire constants
 // ---------------------------------------------------------------------------
 //
-// All on-wire constants below are derived from the Phase 12 spike capture
-// (12-VERDICT.md §(c)) cross-checked against:
+// All on-wire constants below were derived from a captured SP→EC ping-pong
+// session and cross-checked against:
 //
 //   * EC's `embedded-services::uart-service::process_response`
 //     (uart-service/src/lib.rs:65-95) — slave-address values + endpoint-id /
@@ -59,7 +59,7 @@ const MCTP_MSG_TAG: u8 = 3;
 const SMBUS_DST_SLAVE: u8 = 1;
 /// SmbusEspi source slave. Matches `uart-service` line 76: `source_slave_address: 0`.
 const SMBUS_SRC_SLAVE: u8 = 0;
-/// Battery::GetSta message id (verdict §(c) byte 12 = 0x0f = 15).
+/// Battery::GetSta message id (captured wire byte 12 = 0x0f = 15).
 const BATTERY_GETSTA_MSG_ID: u16 = 15;
 /// Battery service id used by the ODP relay header (= BATTERY_SVC_EID).
 const BATTERY_SVC_ID: u8 = 0x08;
@@ -155,13 +155,17 @@ pub fn encode_battery_request(buf: &mut [u8], battery_id: u8) -> Result<usize, F
         message_id: BATTERY_GETSTA_MSG_ID,
     };
 
-    // ODP body for Battery::GetSta(battery_id) — verdict §(c) shows the
-    // payload is the relay-header re-echo + a single battery_id byte.
+    // ODP body for Battery::GetSta(battery_id) — the per-service payload
+    // re-echoes the 4-byte ODP relay header (so EC can dispatch without
+    // re-parsing) followed by the battery_id selector. Derive the first 4
+    // bytes from `odp_header` rather than hand-encoding them so a future
+    // header-layout tweak can't silently desync against the body.
+    let header_bytes = odp_header.to_u32().to_be_bytes();
     let body = OdpRelayBody([
-        0x02,                    // is_request=1 (high nibble)
-        BATTERY_SVC_ID,
-        0x00,
-        BATTERY_GETSTA_MSG_ID as u8,
+        header_bytes[0],
+        header_bytes[1],
+        header_bytes[2],
+        header_bytes[3],
         battery_id,
     ]);
 
@@ -209,7 +213,10 @@ pub fn decode_battery_response(buf: &[u8]) -> Result<BatteryResponse<'_>, Framer
 
     let mut padded = [0u8; 64];
     if needed + 1 > padded.len() {
-        return Err(FramerError::DecodeFailed);
+        // Wire-claimed size exceeds our internal padded scratch. Surface as
+        // BufTooSmall (the requested operation cannot fit our buffer) rather
+        // than DecodeFailed (which implies semantic rejection).
+        return Err(FramerError::BufTooSmall);
     }
     padded[..needed].copy_from_slice(&buf[..needed]);
     padded[needed] = 0; // dummy PEC
@@ -224,7 +231,7 @@ pub fn decode_battery_response(buf: &[u8]) -> Result<BatteryResponse<'_>, Framer
         .ok_or(FramerError::DecodeFailed)?;
 
     let (header, body) = message
-        .parse_as::<OdpRelayBodyOwned>()
+        .parse_as::<OdpRelayBodyDecode>()
         .map_err(|_| FramerError::DecodeFailed)?;
 
     // `body.0` is the per-service result payload (everything past the 4-byte
@@ -238,8 +245,14 @@ pub fn decode_battery_response(buf: &[u8]) -> Result<BatteryResponse<'_>, Framer
     //   [8]      MCTP message type byte (0x7d)
     //   [9..13)  ODP relay header
     //   [13..)   per-service result body
+    //
+    // Defense-in-depth: if `byte_count` is small enough that the header alone
+    // doesn't fit (`needed < 13`), `buf.get(13..needed)` is an inverted range.
+    // Treat that as truncation rather than silently substituting `&[]`, since
+    // a downstream caller that gates only on `service_id` could otherwise
+    // accept a malformed-but-mctp-rs-parsed frame.
     let _ = body;
-    let result_body = buf.get(13..needed).unwrap_or(&[]);
+    let result_body = buf.get(13..needed).ok_or(FramerError::Truncated)?;
 
     Ok(BatteryResponse {
         is_request: header.is_request,
@@ -256,7 +269,7 @@ pub fn decode_battery_response(buf: &[u8]) -> Result<BatteryResponse<'_>, Framer
 // `serialize_packet` / `parse_as` with the ODP message type (0x7d).
 // ---------------------------------------------------------------------------
 
-/// MCTP message type byte that ODP uses for relay traffic (verdict §(c) byte 8).
+/// MCTP message type byte that ODP uses for relay traffic (captured wire byte 8).
 const ODP_MSG_TYPE: u8 = 0x7d;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -316,9 +329,10 @@ impl MctpMessageHeaderTrait for OdpRelayHeader {
     }
 }
 
-/// Outbound (encode-side) ODP body — owns its 5-byte payload by value so it
-/// satisfies the lifetime gymnastics of `MctpMessageTrait<'buf>` without
-/// needing a borrow into the caller's stack.
+/// Encode-side ODP body — owns its 5-byte payload by value so it satisfies
+/// the lifetime gymnastics of `MctpMessageTrait<'buf>` without borrowing
+/// from the caller's stack. (Encode-only: see `OdpRelayBodyDecode` for the
+/// decode-side counterpart.)
 struct OdpRelayBody([u8; 5]);
 
 impl<'buf> MctpMessageTrait<'buf> for OdpRelayBody {
@@ -346,17 +360,19 @@ impl<'buf> MctpMessageTrait<'buf> for OdpRelayBody {
     }
 }
 
-/// Decode-side ODP body wrapper — owns no data; we re-slice the caller's
-/// input buffer in `decode_battery_response` to produce the borrow.
-struct OdpRelayBodyOwned;
+/// Decode-side marker type. Carries no payload — the body bytes are
+/// re-sliced from the caller's input buffer in `decode_battery_response`
+/// (so they outlive `mctp-rs`'s transient assembly buffer). Renamed from
+/// the misleading `OdpRelayBodyOwned`: it owns nothing.
+struct OdpRelayBodyDecode;
 
-impl<'buf> MctpMessageTrait<'buf> for OdpRelayBodyOwned {
+impl<'buf> MctpMessageTrait<'buf> for OdpRelayBodyDecode {
     type Header = OdpRelayHeader;
     const MESSAGE_TYPE: u8 = ODP_MSG_TYPE;
 
     fn serialize<M: mctp_rs::MctpMedium>(self, _: &mut [u8]) -> MctpPacketResult<usize, M> {
         Err(MctpPacketError::SerializeError(
-            "OdpRelayBodyOwned is decode-only",
+            "OdpRelayBodyDecode is decode-only",
         ))
     }
 
@@ -364,9 +380,184 @@ impl<'buf> MctpMessageTrait<'buf> for OdpRelayBodyOwned {
         _: &Self::Header,
         _buffer: &'buf [u8],
     ) -> MctpPacketResult<Self, M> {
-        Ok(OdpRelayBodyOwned)
+        Ok(OdpRelayBodyDecode)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Test fixtures (re-exported for downstream test crates under the
+// `test-fixtures` feature). Kept here as the single source of truth for the
+// captured ping-pong wire bytes — duplicating them across submodule
+// boundaries (e.g. `mctp_ping.rs`'s host tests) silently masks wire-format
+// drift if one copy is updated and the other is not.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures {
+    /// Captured TX (SP→EC, Battery::GetSta request, battery_id=0).
+    ///
+    /// Byte breakdown:
+    ///   00 0f 0e 03   SmbusEspi header (dst_slave=0, src_slave=1, byte_count=14, cmd=0x0f MCTP)
+    ///   01 08 80 d3   MCTP transport header (ver=1, dst_eid=0x08 EC, src_eid=0x80 SP, SOM/EOM/seq=1/tag=3)
+    ///   7d            MCTP message type byte (ODP relay)
+    ///   02 08 00 0f   ODP relay header (is_request=1, service_id=0x08, msg_id=15)
+    ///   02 08 00 0f 00  ODP body: relay-header re-echo + battery_id=0
+    pub const PHASE_12_TX_18B: [u8; 18] = [
+        0x00, 0x0f, 0x0e, 0x03,
+        0x01, 0x08, 0x80, 0xd3,
+        0x7d,
+        0x02, 0x08, 0x00, 0x0f,
+        0x02, 0x08, 0x00, 0x0f, 0x00,
+    ];
+
+    /// Captured RX (EC→SP, Battery error response, message_id=1).
+    ///
+    /// Byte breakdown:
+    ///   00 0f 09 03   SmbusEspi header (byte_count=0x09)
+    ///   01 80 08 d3   MCTP transport header (dst_eid=0x80 SP, src_eid=0x08 EC battery)
+    ///   7d            MCTP message type byte (ODP relay)
+    ///   00 08 80 01   ODP relay header (is_request=0, service_id=0x08, is_error=1, msg_id=1)
+    pub const PHASE_12_RX_13B: [u8; 13] = [
+        0x00, 0x0f, 0x09, 0x03,
+        0x01, 0x80, 0x08, 0xd3,
+        0x7d,
+        0x00, 0x08, 0x80, 0x01,
+    ];
+}
+
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::test_fixtures::{PHASE_12_RX_13B, PHASE_12_TX_18B};
+    use super::{decode_battery_response, encode_battery_request, FramerError};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn encode_battery_request_matches_phase12_capture() {
+        let mut buf = [0u8; 64];
+        let n = encode_battery_request(&mut buf, /*battery_id=*/ 0).expect("encode ok");
+        assert_eq!(n, PHASE_12_TX_18B.len(), "encoded length mismatch");
+        assert_eq!(&buf[..n], &PHASE_12_TX_18B[..], "encoded bytes diverge from captured wire");
+    }
+
+    #[test]
+    fn decode_battery_response_parses_phase12_rx() {
+        let resp = decode_battery_response(&PHASE_12_RX_13B).expect("decode ok");
+        assert!(!resp.is_request, "expected response (is_request=false)");
+        assert_eq!(resp.service_id, 0x08, "expected Battery service");
+        assert!(resp.is_error, "expected is_error=1 from spike capture");
+        assert_eq!(resp.message_id, 1, "expected message_id=1");
+        // Captured RX has byte_count=9 → needed=13, so the per-service body
+        // is empty (just an ODP relay header echo). Pin that explicitly so a
+        // future regression to the body slice offset is caught.
+        assert_eq!(resp.body, &[][..], "Phase 12 RX has zero body bytes");
+    }
+
+    #[test]
+    fn decode_battery_response_extracts_body_bytes() {
+        // Synthetic frame with a non-empty per-service body: header byte_count
+        // bumped to 0x0d so needed=17, then 4 trailing bytes (0xDE 0xAD 0xBE
+        // 0xEF) appended after the 13-byte header. Validates that
+        // `decode_battery_response` returns the correct body slice (catches
+        // any future regression to the `13..needed` re-slice offset).
+        let mut frame = [0u8; 17];
+        frame[..PHASE_12_RX_13B.len()].copy_from_slice(&PHASE_12_RX_13B);
+        frame[2] = 0x0d; // byte_count = 4 (header) + 9 (transport+ODP) → needed=17
+        frame[13] = 0xDE;
+        frame[14] = 0xAD;
+        frame[15] = 0xBE;
+        frame[16] = 0xEF;
+        let resp = decode_battery_response(&frame).expect("decode ok");
+        assert_eq!(resp.body, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
+    }
+
+    /// Roundtrip: encode each interesting battery_id, decode the result,
+    /// assert header fields are preserved. Catches encoder regressions where
+    /// the literal byte happens to match the captured fixture but the
+    /// semantic field has drifted.
+    #[test]
+    fn encode_decode_roundtrip_preserves_header_fields() {
+        for &battery_id in &[0u8, 1, 0x7D, 0x7E, 0xFF] {
+            let mut tx = [0u8; 64];
+            let n = encode_battery_request(&mut tx, battery_id)
+                .unwrap_or_else(|e| panic!("encode failed for battery_id={battery_id}: {e:?}"));
+            // The encoder produces a REQUEST frame; `decode_battery_response`
+            // is permissive about request vs response and just decodes the
+            // ODP relay header. We assert the fields the SP cares about.
+            let resp = decode_battery_response(&tx[..n])
+                .unwrap_or_else(|e| panic!("decode failed for battery_id={battery_id}: {e:?}"));
+            assert!(resp.is_request, "encoded frame must mark is_request=1");
+            assert_eq!(resp.service_id, 0x08, "service_id must round-trip");
+            assert!(!resp.is_error, "request frames have is_error=0");
+            assert_eq!(resp.message_id, 15, "GetSta message_id must round-trip");
+            assert_eq!(
+                resp.body.last().copied(),
+                Some(battery_id),
+                "battery_id selector must appear at end of body"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_short_buf_errors() {
+        // Pin the BufTooSmall boundary at MIN_OUTPUT=18 — 17 bytes too small,
+        // 18 bytes sufficient.
+        let mut too_small = [0u8; 17];
+        let result = encode_battery_request(&mut too_small, 0);
+        assert!(
+            matches!(result, Err(FramerError::BufTooSmall)),
+            "expected BufTooSmall at 17 bytes, got {result:?}"
+        );
+
+        let mut just_enough = [0u8; 18];
+        let result = encode_battery_request(&mut just_enough, 0);
+        assert!(
+            result.is_ok(),
+            "expected Ok at 18 bytes, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn decode_truncated_header_errors() {
+        let result = decode_battery_response(&[0x00, 0x0f]); // truncated SmbusEspi header
+        assert!(
+            matches!(
+                result,
+                Err(FramerError::Truncated) | Err(FramerError::DecodeFailed)
+            ),
+            "expected Truncated or DecodeFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn decode_partial_body_errors() {
+        // Header says byte_count=9 → needed=13, but only 6 bytes supplied.
+        // Exercises the second truncation guard (`buf.len() < needed`),
+        // distinct from the 4-byte header guard above.
+        let frame = [0x00u8, 0x0f, 0x09, 0x03, 0x01, 0x80];
+        let result = decode_battery_response(&frame);
+        assert_eq!(
+            result,
+            Err(FramerError::Truncated),
+            "partial body must surface as Truncated"
+        );
+    }
+
+    #[test]
+    fn decode_oversize_byte_count_errors_as_buf_too_small() {
+        // byte_count=200 → needed=204, exceeding the internal 64-byte
+        // padded scratch. F-3 / review-correctness regression test — this
+        // path used to return DecodeFailed.
+        let mut frame = [0u8; 13];
+        frame[2] = 200;
+        // pad needed bytes with zeros so the truncation guard doesn't fire
+        // first: we need buf.len() >= needed, so build a 204-byte buffer.
+        let mut big = [0u8; 204];
+        big[2] = 200;
+        let result = decode_battery_response(&big);
+        assert_eq!(
+            result,
+            Err(FramerError::BufTooSmall),
+            "wire-claimed oversize must surface as BufTooSmall (not DecodeFailed)"
+        );
+    }
+}
