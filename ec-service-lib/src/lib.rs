@@ -5,7 +5,7 @@ mod service;
 pub mod services;
 mod sp_logger;
 
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
 pub use message_handler::MessageHandler;
 use odp_ffa::{Function, MsgSendDirectReq2, MsgSendDirectResp2, MsgWait, RxTxMap, TryFromSmcCall};
 pub use service::Service;
@@ -75,11 +75,11 @@ pub(crate) fn msg_loop(
     info!("msg_loop: msg: {:?}", msg);
     loop {
         msg = if let Ok(request) = MsgSendDirectReq2::try_from_smc_call(msg.clone()) {
-            info!("msg_loop: request: {:?}", request);
+            trace!("msg_loop: request: {:?}", request);
             before_handle_message(&request)?;
             match handler(request) {
                 Ok(response) => {
-                    info!("msg_loop: response: {:?}", response);
+                    trace!("msg_loop: response: {:?}", response);
                     response.exec()?
                 }
                 Err(e) => {
