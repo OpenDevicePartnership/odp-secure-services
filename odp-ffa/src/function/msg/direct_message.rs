@@ -23,7 +23,7 @@ impl TryFrom<DirectMessage> for SmcParams {
         let (uuid_high, uuid_low) = msg.uuid.as_u64_pair();
         SmcParams::try_from_iter(
             [
-                combine_low_high_u16(msg.source_id, msg.destination_id),
+                combine_low_high_u16(msg.destination_id, msg.source_id),
                 uuid_high.to_be(),
                 uuid_low.to_be(),
             ]
@@ -37,8 +37,8 @@ impl TryFrom<SmcParams> for DirectMessage {
     type Error = Error;
 
     fn try_from(value: SmcParams) -> Result<Self, Self::Error> {
-        let source_id = (value.x1 & 0xFFFF) as u16;
-        let destination_id = (value.x1 >> 16) as u16;
+        let destination_id = (value.x1 & 0xFFFF) as u16;
+        let source_id = (value.x1 >> 16) as u16;
 
         let uuid_high = u64::from_be(value.x2);
         let uuid_low = u64::from_be(value.x3);
