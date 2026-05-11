@@ -12,7 +12,7 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
 use crate::{Result, Service};
-use log::{error, info};
+use log::{error, info, trace};
 use odp_ffa::HasRegisterPayload;
 use odp_ffa::{DirectMessagePayload, ErrorCode, MsgSendDirectReq2, MsgSendDirectResp2};
 use uuid::{uuid, Uuid};
@@ -362,7 +362,7 @@ impl<S: TpmSstOps> TpmService<S> {
                 // Check the cmdReady bit in the CrbControlRequest register to see if we need to
                 // transition to the READY state, otherwise, deny the request.
                 if crb.crb_control_request & PTP_CRB_CONTROL_AREA_REQUEST_COMMAND_READY != 0 {
-                    info!("IDLE State - Handle TPM Command cmdReady Request");
+                    trace!("IDLE State - Handle TPM Command cmdReady Request");
                     status = self.sst.cmd_ready(self.active_locality);
                     if status == ErrorCode::Ok {
                         self.current_state = TpmState::Ready;
@@ -378,7 +378,7 @@ impl<S: TpmSstOps> TpmService<S> {
                 // Check the goIdle bit in the CrbControlRequest register to see if we need to
                 // transition back to the IDLE state.
                 if crb.crb_control_request & PTP_CRB_CONTROL_AREA_REQUEST_GO_IDLE != 0 {
-                    info!("READY State - Handle TPM Command goIdle Request");
+                    trace!("READY State - Handle TPM Command goIdle Request");
                     status = self.sst.go_idle(self.active_locality);
                     if status == ErrorCode::Ok {
                         self.current_state = TpmState::Idle;
@@ -386,12 +386,12 @@ impl<S: TpmSstOps> TpmService<S> {
                 // Check the cmdReady bit in the CrbControlRequest register, clear it if it has been
                 // set again.
                 } else if crb.crb_control_request & PTP_CRB_CONTROL_AREA_REQUEST_COMMAND_READY != 0 {
-                    info!("READY State - Handle TPM Command cmdReady Request");
+                    trace!("READY State - Handle TPM Command cmdReady Request");
                     status = self.sst.cmd_ready(self.active_locality);
                 // Check the CrbControlStart register to see if we need to start executing a command.
                 // Once the command completes, transition to the COMPLETE state.
                 } else if crb.crb_control_start & PTP_CRB_CONTROL_START != 0 {
-                    info!("READY State - Handle TPM Command Start Request");
+                    trace!("READY State - Handle TPM Command Start Request");
                     status = self.sst.start(self.active_locality, crb as *mut PtpCrbRegisters);
                     if status == ErrorCode::Ok {
                         self.current_state = TpmState::Complete;
@@ -408,7 +408,7 @@ impl<S: TpmSstOps> TpmService<S> {
                 // Check the goIdle bit in the CrbControlRequest register to see if we need to
                 // transition to the IDLE state.
                 if crb.crb_control_request & PTP_CRB_CONTROL_AREA_REQUEST_GO_IDLE != 0 {
-                    info!("COMPLETE State - Handle TPM Command goIdle Request");
+                    trace!("COMPLETE State - Handle TPM Command goIdle Request");
                     status = self.sst.go_idle(self.active_locality);
                     if status == ErrorCode::Ok {
                         self.current_state = TpmState::Idle;
@@ -417,7 +417,7 @@ impl<S: TpmSstOps> TpmService<S> {
                 // Check the cmdReady bit in the CrbControlRequest register to see if we need to
                 // transition back to the READY state.
                 } else if crb.crb_control_request & PTP_CRB_CONTROL_AREA_REQUEST_COMMAND_READY != 0 {
-                    info!("COMPLETE State - Handle TPM Command cmdReady Request");
+                    trace!("COMPLETE State - Handle TPM Command cmdReady Request");
                     if self.sst.is_idle_bypass_supported() {
                         status = self.sst.cmd_ready(self.active_locality);
                         if status == ErrorCode::Ok {
@@ -427,7 +427,7 @@ impl<S: TpmSstOps> TpmService<S> {
                     }
                 // Check the CrbControlStart register to see if we need to execute another command.
                 } else if crb.crb_control_start & PTP_CRB_CONTROL_START != 0 {
-                    info!("COMPLETE State - Handle TPM Command Start Request");
+                    trace!("COMPLETE State - Handle TPM Command Start Request");
                     // Execution of another command from COMPLETE is only supported if TPM_CapCRBIdleBypass
                     // is 1.
                     if self.sst.is_idle_bypass_supported() {
