@@ -148,7 +148,7 @@ pub trait TpmSstOps {
     fn locality_request(&mut self, locality: u8) -> ErrorCode;
     fn locality_relinquish(&mut self, locality: u8) -> ErrorCode;
     fn is_idle_bypass_supported(&self) -> bool;
-    fn init(&mut self, internal_tpm_address: u64);
+    fn init(&mut self, tpm_crb_address: u64);
 }
 
 // ---------------------------------------------------------------------------
