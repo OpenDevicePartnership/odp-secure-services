@@ -23,7 +23,7 @@ aarch64-rt = { version = "0.2.2", default-features = false, features = [
     "exceptions",
 ] }
 aarch64-haf = { path = "aarch64-haf" }
-bit-register = { git = "https://github.com/OpenDevicePartnership/odp-utilities" }
+bit-register = { git = "https://github.com/OpenDevicePartnership/odp-utilities", tag = "v0.1.0" }
 critical-section = { version = "1.1.0", default-features = false }
 debug-non-default = { git = "https://github.com/OpenDevicePartnership/odp-utilities" }
 ec-service-lib = { path = "ec-service-lib" }
