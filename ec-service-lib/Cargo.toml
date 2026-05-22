@@ -17,9 +17,23 @@ uuid.workspace = true
 odp-ffa.workspace = true
 num_enum.workspace = true
 log.workspace = true
+qemu-sp-uart.workspace = true
+mctp-rs = { workspace = true, features = ["serial"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
 aarch64-cpu.workspace = true
+
+# Host-test-only deps. embedded-services + battery-service-relay pull in
+# embassy-sync::ThreadModeRawMutex which is cortex_m-only — they fail to
+# compile for aarch64-unknown-none[-softfloat]. The wire-format
+# unit test runs on the host (where std is available, satisfying the cfg
+# gate) and round-trips bytes through the EC's OWN SerializableMessage
+# impl, so SP-side EcBattery code performs MANUAL serialization at runtime
+# (trivial: 1-byte GetBst request payload, 4×LE-u32 response payload).
+[dev-dependencies]
+embedded-services.workspace = true
+battery-service-relay.workspace = true
+battery-service-interface.workspace = true
 
 [features]
 default = []

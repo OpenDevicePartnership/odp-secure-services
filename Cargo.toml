@@ -33,9 +33,15 @@ espi-device = { path = "espi-device" }
 espi-device-stub = { path = "espi-device-stub" }
 odp-ffa = { path = "odp-ffa" }
 hafnium = { path = "hafnium" }
+qemu-sp-uart = { path = "qemu-sp-uart" }
+
+mctp-rs = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false, features = ["serial"] }
+embedded-services = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+battery-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+battery-service-interface = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
 log = { version = "0.4", default-features = false }
 mockall = "0.13.1"
-num_enum = { version = "0.7.3", default-features = false }
+num_enum = { version = "0.7.5", default-features = false }
 num-traits = { version = "0.2.19", default-features = false }
 subenum = { version = "1.1.2", default-features = false }
 uuid = { version = "1.0", default-features = false, features = ["v1"] }
