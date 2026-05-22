@@ -12,7 +12,7 @@ repository = "https://github.com/OpenDevicePartnership/odp-secure-services"
 targets = ["aarch64-unknown-none", "aarch64-unknown-none-softfloat"]
 
 [dependencies]
-# Intentionally empty: this crate uses only `core` (no external deps; no allocator).
+embedded-io.workspace = true
 
 [lints]
 workspace = true

@@ -8,21 +8,18 @@ Minimal blocking PL011 MMIO driver for the QEMU SBSA secure-partition's
 
 - `Pl011Uart::new(base: u64) -> Self` (`unsafe`) — production constructor over
   `RawMmio`; `base` is the SP-mapped device-region address.
-- `Pl011Uart::from_mmio(mmio: M) -> Self` — generic constructor for unit tests
-  (substitute a mock `Mmio` backend).
 - `Pl011Uart::write_bytes(&mut self, &[u8]) -> Result<(), Error>` — blocking
   write; polls `UARTFR.TXFF` per byte.
 - `Pl011Uart::read_byte_blocking(&mut self) -> Result<u8, Error>` — busy-spin
   forever until `UARTFR.RXFE` clears.
-- `Pl011Uart::read_byte_with_iteration_cap(&mut self, cap: u32)` — same loop
-  bounded by `cap` iterations; returns `Err(Error::Timeout)` if exhausted.
 
 ## Base address
 
-Constructor-parameter-driven. The SP DTS declares `ec_uart` at `0x60030000`
-(`mod/secure-services/platform/linker/qemu-ec-sp.dts` line 106-108). The
-platform binary wires `Pl011Uart::new(0x60030000)` from `qemu-ec-sp::main`.
-The literal does NOT appear in this crate.
+Constructor-parameter-driven. The outer platform repo's SP DTS declares
+`ec_uart` at `0x60030000` (in the `odp-platform-qemu-sbsa` repo under
+`mod/secure-services/platform/linker/qemu-ec-sp.dts`). The platform binary
+wires `Pl011Uart::new(0x60030000)` from `qemu-ec-sp::main`. The literal
+does NOT appear in this crate.
 
 ## Targets
 

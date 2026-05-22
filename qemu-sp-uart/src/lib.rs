@@ -12,8 +12,10 @@
 //! # Base address contract
 //!
 //! [`Pl011Uart::new`] takes the MMIO `base` as a constructor parameter; the
-//! literal device address (`0x60030000` for the SP-side `ec_uart` per
-//! `qemu-ec-sp.dts`) is NOT hard-coded inside this crate. The platform
+//! literal device address (`0x60030000` for the SP-side `ec_uart`) is NOT
+//! hard-coded inside this crate. The address is declared in the outer
+//! platform repo's SP DTS (`odp-platform-qemu-sbsa` →
+//! `mod/secure-services/platform/linker/qemu-ec-sp.dts`). The platform
 //! binary wires `Pl011Uart::new(0x60030000)` from `qemu-ec-sp::main`.
 //!
 //! # Safety contract
@@ -95,6 +97,22 @@ pub enum Error {
     Timeout,
 }
 
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::Timeout => write!(f, "PL011 timeout"),
+        }
+    }
+}
+
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::TimedOut
+    }
+}
+
+impl core::error::Error for Error {}
+
 /// Blocking PL011 UART driver. Generic over the [`Mmio`] backend.
 pub struct Pl011Uart<M: Mmio> {
     mmio: M,
@@ -104,9 +122,8 @@ impl<M: Mmio> Pl011Uart<M> {
     /// Wrap an [`Mmio`] backend. Does NOT touch UARTCR / UARTLCR_H — TF-A
     /// and QEMU init are assumed.
     ///
-    /// Crate-private: external callers should use [`Pl011Uart::new`]
-    /// (production) or construct directly with `Pl011Uart { mmio }` in
-    /// tests (via the `pub(crate)` field).
+    /// Crate-private: only visible to in-crate tests and the production
+    /// [`Pl011Uart::new`] constructor.
     pub(crate) const fn from_mmio(mmio: M) -> Self {
         Self { mmio }
     }
@@ -148,6 +165,31 @@ impl<M: Mmio> Pl011Uart<M> {
             }
             core::hint::spin_loop();
         }
+    }
+}
+
+impl<M: Mmio> embedded_io::ErrorType for Pl011Uart<M> {
+    type Error = Error;
+}
+
+impl<M: Mmio> embedded_io::Read for Pl011Uart<M> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        buf[0] = self.read_byte_blocking()?;
+        Ok(1)
+    }
+}
+
+impl<M: Mmio> embedded_io::Write for Pl011Uart<M> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.write_bytes(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
