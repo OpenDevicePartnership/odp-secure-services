@@ -1,0 +1,18 @@
+[package]
+name = "qemu-sp-uart"
+description = "Minimal blocking PL011 MMIO driver for the QEMU SBSA secure partition"
+categories = ["embedded", "no-std", "no-std::no-alloc"]
+keywords = ["embedded", "no-std", "pl011", "uart", "qemu"]
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+repository = "https://github.com/OpenDevicePartnership/odp-secure-services"
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none", "aarch64-unknown-none-softfloat"]
+
+[dependencies]
+embedded-io.workspace = true
+
+[lints]
+workspace = true
