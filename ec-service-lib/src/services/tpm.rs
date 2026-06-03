@@ -600,6 +600,15 @@ impl<S: TpmSstOps> TpmService<S> {
             self.init_internal_crb(locality);
         }
 
+        // Default Locality 0 and Locality 1 to open.
+        self.locality_states[0] = TpmLocalityState::Open;
+        self.locality_states[1] = TpmLocalityState::Open;
+
+        // Default all other localities to closed.
+        self.locality_states[2] = TpmLocalityState::Closed;
+        self.locality_states[3] = TpmLocalityState::Closed;
+        self.locality_states[4] = TpmLocalityState::Closed;
+
         // Initialize the TPM Service State Translation Library.
         self.sst.init(tpm_external_crb_address);
 
@@ -898,6 +907,34 @@ mod tests {
     }
 
     // =======================================================================
+    // TpmService::init Test(s)
+    // =======================================================================
+    #[test]
+    fn test_tpm_service_init() {
+        let (_buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new());
+        unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
+        assert_eq!(
+            service.interface_id_default.interface_type(),
+            PtpCrbInterfaceType::Crb as u32
+        );
+        assert_eq!(
+            service.interface_id_default.interface_version(),
+            PtpCrbInterfaceVersion::Crb as u32
+        );
+        assert_eq!(service.interface_id_default.cap_locality(), 1); // 5 localities supported
+        assert_eq!(service.interface_id_default.cap_crb(), 1); // CRB supported
+        assert_eq!(service.tpm_internal_crb_address, addr);
+        assert_eq!(service.locality_states[0], TpmLocalityState::Open);
+        assert_eq!(service.locality_states[1], TpmLocalityState::Open);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Closed);
+        assert_eq!(service.locality_states[3], TpmLocalityState::Closed);
+        assert_eq!(service.locality_states[4], TpmLocalityState::Closed);
+        assert_eq!(service.current_state, TpmState::Idle);
+        assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
+    }
+
+    // =======================================================================
     // TpmService::convert_error_to_status Test(s)
     // =======================================================================
     #[test]
@@ -990,7 +1027,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_start_locality_request() {
-        let (buff, addr) = alloc_crb_region();
+        let (_buff, addr) = alloc_crb_region();
         let mut service = TpmService::new(MockTpmSst::new());
         unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
@@ -1023,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_start_command() {
-        let (buff, addr) = alloc_crb_region();
+        let (_buff, addr) = alloc_crb_region();
         let mut service = TpmService::new(MockTpmSst::new());
         unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
@@ -1099,7 +1136,7 @@ mod tests {
 
     #[test]
     fn test_start_locality_relinquish() {
-        let (buff, addr) = alloc_crb_region();
+        let (_buff, addr) = alloc_crb_region();
         let mut service = TpmService::new(MockTpmSst::new());
         unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
