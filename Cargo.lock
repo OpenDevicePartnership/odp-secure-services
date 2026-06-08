@@ -516,24 +516,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ihv1-ec-sp"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "aarch64-haf",
- "aarch64-paging",
- "aarch64-rt",
- "chrono",
- "ec-service-lib",
- "espi-device 0.1.0",
- "espi-device-stub",
- "hafnium",
- "log",
- "odp-ffa",
- "uuid",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -681,22 +663,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "qemu-ec-sp"
-version = "0.1.0"
-dependencies = [
- "aarch64-cpu",
- "aarch64-haf",
- "aarch64-paging",
- "aarch64-rt",
- "chrono",
- "ec-service-lib",
- "hafnium",
- "log",
- "odp-ffa",
- "uuid",
 ]
 
 [[package]]

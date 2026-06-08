@@ -6,8 +6,6 @@ members = [
     "ec-service-lib",
     "espi-device",
     "espi-device-stub",
-    "platform/ihv1-sp",
-    "platform/qemu-sp",
     "aarch64-haf",
     "qemu-sp-uart",
 ]
