@@ -235,7 +235,7 @@ impl<S: TpmSstOps> TpmService<S> {
             active_locality: NO_ACTIVE_LOCALITY,
             interface_id_default: PtpCrbInterfaceIdentifier::new(),
             locality_states: [TpmLocalityState::Closed; NUM_LOCALITIES as usize],
-            tpm_internal_crb_address: 0x10000200000,
+            tpm_internal_crb_address: 0x40200000,
             sst,
         }
     }
@@ -724,7 +724,7 @@ mod tests {
     use odp_ffa::DirectMessagePayload;
 
     const TPM_SERVICE_UUID: Uuid = uuid!("17b862a4-1806-4faf-86b3-089a58353861");
-    const EXTERNAL_TPM_CRB_ADDR: u64 = 0x60120000;
+    const EXTERNAL_TPM_CRB_ADDR: u64 = 0x0C000000;
 
     // =======================================================================
     // Mock CrbRegion
@@ -903,7 +903,7 @@ mod tests {
             service.locality_states,
             [TpmLocalityState::Closed; NUM_LOCALITIES as usize],
         );
-        assert_eq!(service.tpm_internal_crb_address, 0x10000200000);
+        assert_eq!(service.tpm_internal_crb_address, 0x40200000);
     }
 
     // =======================================================================
