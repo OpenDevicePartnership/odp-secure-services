@@ -177,7 +177,7 @@ impl TpmSst {
         Self {
             is_crb_interface: false,
             is_idle_bypass_supported: false,
-            tpm_crb_address: 0x60120000,
+            tpm_crb_address: 0x0, // Must be set in init
         }
     }
 
@@ -720,7 +720,7 @@ mod tests {
         let sst = TpmSst::new();
         assert!(!sst.is_crb_interface);
         assert!(!sst.is_idle_bypass_supported);
-        assert_eq!(sst.tpm_crb_address, 0x60120000);
+        assert_eq!(sst.tpm_crb_address, 0x0);
     }
 
     #[test]
