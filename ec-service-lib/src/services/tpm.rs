@@ -229,13 +229,13 @@ pub struct TpmService<S: TpmSstOps> {
 impl<S: TpmSstOps> TpmService<S> {
     // Creates an uninitialized 'TpmService'. Call [`init`] to set up state. Init
     // will initialize the internal variables.
-    pub fn new(sst: S) -> Self {
+    pub fn new(sst: S, tpm_internal_crb_address: u64) -> Self {
         Self {
             current_state: TpmState::Idle,
             active_locality: NO_ACTIVE_LOCALITY,
             interface_id_default: PtpCrbInterfaceIdentifier::new(),
             locality_states: [TpmLocalityState::Closed; NUM_LOCALITIES as usize],
-            tpm_internal_crb_address: 0x0, // Must be set by init
+            tpm_internal_crb_address,
             sst,
         }
     }
@@ -583,7 +583,7 @@ impl<S: TpmSstOps> TpmService<S> {
     /// init_internal_crb. This sets all locality regions to known valid
     /// values. The internal and external TPM CRB addresses must be valid
     /// memory regions passed in by the caller.
-    pub unsafe fn init(&mut self, tpm_internal_crb_address: u64, tpm_external_crb_address: u64) {
+    pub unsafe fn init(&mut self) {
         // Build the default interface ID.
         self.interface_id_default = PtpCrbInterfaceIdentifier::new();
         self.interface_id_default
@@ -592,9 +592,6 @@ impl<S: TpmSstOps> TpmService<S> {
             .set_interface_version(PtpCrbInterfaceVersion::Crb as u32);
         self.interface_id_default.set_cap_locality(1); // 5 localities supported
         self.interface_id_default.set_cap_crb(1); // CRB supported
-
-        // Set the internal TPM CRB address.
-        self.tpm_internal_crb_address = tpm_internal_crb_address;
 
         for locality in 0..NUM_LOCALITIES {
             self.init_internal_crb(locality);
@@ -610,7 +607,7 @@ impl<S: TpmSstOps> TpmService<S> {
         self.locality_states[4] = TpmLocalityState::Closed;
 
         // Initialize the TPM Service State Translation Library.
-        self.sst.init(tpm_external_crb_address);
+        self.sst.init();
 
         self.current_state = TpmState::Idle;
         self.active_locality = NO_ACTIVE_LOCALITY;
@@ -767,7 +764,7 @@ mod tests {
         fn is_idle_bypass_supported(&self) -> bool {
             false
         }
-        fn init(&mut self, _tpm_external_crb_address: u64) {
+        fn init(&mut self) {
             // Do nothing
         }
     }
@@ -895,7 +892,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_tpm_service_new_defaults() {
-        let service = TpmService::new(MockTpmSst::new());
+        let service = TpmService::new(MockTpmSst::new(), 0x0);
         assert_eq!(service.current_state, TpmState::Idle);
         assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
         assert_eq!(service.interface_id_default.0, 0);
@@ -912,8 +909,8 @@ mod tests {
     #[test]
     fn test_tpm_service_init() {
         let (_buff, addr) = alloc_crb_region();
-        let mut service = TpmService::new(MockTpmSst::new());
-        unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
         assert_eq!(
             service.interface_id_default.interface_type(),
             PtpCrbInterfaceType::Crb as u32
@@ -1003,7 +1000,8 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_get_interface_version() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let (_buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::GetInterfaceVersion as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::OkResultsReturned as u64);
@@ -1016,7 +1014,8 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_get_feature_info() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let (_buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::GetFeatureInfo as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
@@ -1028,8 +1027,8 @@ mod tests {
     #[test]
     fn test_start_locality_request() {
         let (_buff, addr) = alloc_crb_region();
-        let mut service = TpmService::new(MockTpmSst::new());
-        unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
@@ -1061,8 +1060,8 @@ mod tests {
     #[test]
     fn test_start_command() {
         let (_buff, addr) = alloc_crb_region();
-        let mut service = TpmService::new(MockTpmSst::new());
-        unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
@@ -1137,8 +1136,8 @@ mod tests {
     #[test]
     fn test_start_locality_relinquish() {
         let (_buff, addr) = alloc_crb_region();
-        let mut service = TpmService::new(MockTpmSst::new());
-        unsafe { service.init(addr, EXTERNAL_TPM_CRB_ADDR) };
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
 
         let open_msg = direct_req2_msg(
@@ -1183,7 +1182,7 @@ mod tests {
 
     #[test]
     fn test_start_invalid_locality() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0x0000,
             0x0000,
@@ -1197,7 +1196,7 @@ mod tests {
 
     #[test]
     fn test_start_locality_closed() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0x0000,
             0x0000,
@@ -1212,7 +1211,7 @@ mod tests {
 
     #[test]
     fn test_start_locality_mismatch() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let open_msg = direct_req2_msg(
             0xFF00,
             0x0000,
@@ -1237,7 +1236,7 @@ mod tests {
 
     #[test]
     fn test_start_invalid_function() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         service.locality_states[0] = TpmLocalityState::Open;
         let msg = direct_req2_msg(
             0x0000,
@@ -1255,7 +1254,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_register() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::RegisterForNotification as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
@@ -1266,7 +1265,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_unregister() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0x0000,
             0x0000,
@@ -1283,7 +1282,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_finish() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::FinishNotified as u64, 0x00, 0x00);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::NotSup as u64);
@@ -1294,7 +1293,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_manage_locality_open() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0xFF00,
             0x0000,
@@ -1309,7 +1308,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_close() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         // NOTE: This is only possible because this unit test is within this module. The
         //       locality_states array should only be accessible by the service.
         service.locality_states[0] = TpmLocalityState::Open;
@@ -1327,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_invalid_function() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0xFF00,
             0x0000,
@@ -1341,7 +1340,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_invalid_locality() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(
             0xFF00,
             0x0000,
@@ -1355,7 +1354,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_invalid_source() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         // source_id high byte is NOT 0xFF → should be denied
         let msg = direct_req2_msg(
             0x0000, // Invalid Source ID
@@ -1370,7 +1369,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_open_all_localities() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         for loc in 0..NUM_LOCALITIES {
             let msg = direct_req2_msg(
                 0xFF00,
@@ -1387,7 +1386,7 @@ mod tests {
 
     #[test]
     fn test_manage_locality_close_all_localities() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         for locality in 0..NUM_LOCALITIES {
             let msg = direct_req2_msg(
                 0xFF00,
@@ -1407,7 +1406,7 @@ mod tests {
     // =======================================================================
     #[test]
     fn test_invalid_opcode() {
-        let mut service = TpmService::new(MockTpmSst::new());
+        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         let msg = direct_req2_msg(0, 0, 0xDEAD_BEEF, 0, 0);
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::NoFunc as u64);
