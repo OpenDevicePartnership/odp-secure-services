@@ -348,6 +348,15 @@ impl<S: TpmSstOps> TpmService<S> {
     //         initializing the library.
     unsafe fn handle_command(&mut self) -> TpmStatus {
         let crb = &mut *self.crb_ptr(self.active_locality);
+
+        // Per DEN0138, an empty CRB control request/start register returns
+        // INV_CRB_CTRL_DATA. This catches the case where Start(COMMAND) is
+        // issued before any state-transition bit is written to the CRB.
+        if crb.crb_control_request == 0 && crb.crb_control_start == 0 {
+            error!("CRB has no operation requested");
+            return TpmStatus::InvCrbCtrlData;
+        }
+
         let mut status: ErrorCode = ErrorCode::Denied;
 
         // The normal state flow should be: IDLE -> READY -> COMPLETE -> IDLE.
@@ -476,10 +485,11 @@ impl<S: TpmSstOps> TpmService<S> {
             info!("Handle TPM Locality{:X} Request", locality);
             status = self.sst.locality_request(locality);
             new_active_locality = locality;
-        // Otherwise, the host didn't set the correct bits, invalid.
+        // Otherwise, the host didn't set the correct bits — per DEN0138, the
+        // locality control data is invalid.
         } else {
             error!("Request/Relinquish Bit Not Set");
-            return TpmStatus::Denied;
+            return TpmStatus::InvCrbCtrlData;
         }
 
         // Update the internal TPM CRB.
