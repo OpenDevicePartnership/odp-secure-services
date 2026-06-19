@@ -119,6 +119,20 @@ impl From<NfySetupRsp> for DirectMessagePayload {
     }
 }
 
+impl NfySetupRsp {
+    // Builds the direct response for `req` carrying `status`, tagged with the
+    // handler's message id. Collapses the otherwise-repeated 5-field literal.
+    fn respond(msg_id: MessageID, req: &NotifyReq, status: ErrorCode) -> Self {
+        Self {
+            reserved: 0,
+            sender_uuid: req.sender_uuid,
+            receiver_uuid: req.receiver_uuid,
+            msg_info: MESSAGE_INFO_DIR_RESP + msg_id as u64,
+            status,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MessageInfo(u64);
 
@@ -345,13 +359,7 @@ impl Notify {
             // If the count is zero or exceeds the maximum allowed mappings per request,
             // we cannot register the service
             error!("Invalid parameters: count is zero or exceeds maximum allowed mappings per request");
-            return NfySetupRsp {
-                reserved: 0,
-                sender_uuid: req.sender_uuid,
-                receiver_uuid: req.receiver_uuid,
-                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Setup as u64, // Response message for notification registration failure
-                status: ErrorCode::InvalidParameters,
-            };
+            return NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::InvalidParameters);
         }
 
         // First check to see if the service is already registered
@@ -369,13 +377,7 @@ impl Notify {
             entry = Some(empty_slot);
         } else {
             // If no empty slot is found, we cannot register the service
-            return NfySetupRsp {
-                reserved: 0,
-                sender_uuid: req.sender_uuid,
-                receiver_uuid: req.receiver_uuid,
-                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Setup as u64, // Response message for notification registration failure
-                status: ErrorCode::NoMemory,
-            };
+            return NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::NoMemory);
         }
 
         if let Some(service_entry) = entry {
@@ -383,22 +385,10 @@ impl Notify {
             let res = self.nfy_register_mapping(service_entry, req);
 
             // Regardless of the result, we will return a response
-            return NfySetupRsp {
-                reserved: 0,
-                sender_uuid: req.sender_uuid,
-                receiver_uuid: req.receiver_uuid,
-                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Setup as u64, // Response message for notification registration failure
-                status: res,
-            };
+            return NfySetupRsp::respond(MessageID::Setup, &req, res);
         }
 
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Setup as u64, // Response message for notification registration
-            status: ErrorCode::NoMemory,
-        }
+        NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::NoMemory)
     }
 
     fn nfy_destroy(&mut self, req: NotifyReq) -> NfySetupRsp {
@@ -413,13 +403,7 @@ impl Notify {
                 // If not registered, we cannot unregister the service
                 error!("Service not found for UUID: {:?}", req.receiver_uuid);
                 // If no service entry is not found, we cannot unregister the service
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Destroy as u64, // Response message for notification destroy failure
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Destroy, &req, ErrorCode::InvalidParameters);
             }
         };
 
@@ -427,24 +411,12 @@ impl Notify {
         let res = self.nfy_unregister_mapping(entry, req);
 
         // Regardless of the result, we will return a response
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Destroy as u64, // Response message for notification destroy
-            status: res,
-        }
+        NfySetupRsp::respond(MessageID::Destroy, &req, res)
     }
 
     fn nfy_add(&mut self, req: NotifyReq) -> NfySetupRsp {
         if req.count == 0 || req.count >= NOTIFY_MAX_MAPPINGS_PER_REQ as u8 {
-            return NfySetupRsp {
-                reserved: 0,
-                sender_uuid: req.sender_uuid,
-                receiver_uuid: req.receiver_uuid,
-                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
-                status: ErrorCode::InvalidParameters,
-            };
+            return NfySetupRsp::respond(MessageID::Add, &req, ErrorCode::InvalidParameters);
         }
 
         let entry_index = if let Some(idx) = self.nfy_find_entry(req.receiver_uuid) {
@@ -455,60 +427,30 @@ impl Notify {
             self.entries[empty].mappings = [NfyMapping::default(); NOTIFY_MAX_MAPPINGS];
             empty
         } else {
-            return NfySetupRsp {
-                reserved: 0,
-                sender_uuid: req.sender_uuid,
-                receiver_uuid: req.receiver_uuid,
-                msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
-                status: ErrorCode::NoMemory,
-            };
+            return NfySetupRsp::respond(MessageID::Add, &req, ErrorCode::NoMemory);
         };
 
         let res = self.nfy_register_mapping(entry_index, req);
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Add as u64,
-            status: res,
-        }
+        NfySetupRsp::respond(MessageID::Add, &req, res)
     }
 
     fn nfy_remove(&mut self, req: NotifyReq) -> NfySetupRsp {
         let entry = match self.nfy_find_entry(req.receiver_uuid) {
             Some(idx) => idx,
             None => {
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Remove as u64,
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Remove, &req, ErrorCode::InvalidParameters);
             }
         };
 
         let res = self.nfy_unregister_mapping(entry, req);
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Remove as u64,
-            status: res,
-        }
+        NfySetupRsp::respond(MessageID::Remove, &req, res)
     }
 
     fn nfy_assign(&mut self, req: NotifyReq) -> NfySetupRsp {
         let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
             Some(idx) => idx,
             None => {
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
             }
         };
 
@@ -520,13 +462,7 @@ impl Notify {
                 Some(idx) => idx,
                 None => {
                     error!("No matching cookie for assign: {cookie}");
-                    return NfySetupRsp {
-                        reserved: 0,
-                        sender_uuid: req.sender_uuid,
-                        receiver_uuid: req.receiver_uuid,
-                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                        status: ErrorCode::InvalidParameters,
-                    };
+                    return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
                 }
             };
             let mapping = &self.entries[entry_index].mappings[mapping_index];
@@ -537,24 +473,12 @@ impl Notify {
                 Some(b) => b,
                 None => {
                     error!("Assign id out of range: {id}");
-                    return NfySetupRsp {
-                        reserved: 0,
-                        sender_uuid: req.sender_uuid,
-                        receiver_uuid: req.receiver_uuid,
-                        msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                        status: ErrorCode::InvalidParameters,
-                    };
+                    return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
                 }
             };
             if sim_bitmap & new_bit != 0 {
                 error!("Bitmask conflict during assign for id: {id}");
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
             }
             sim_bitmap |= new_bit;
         }
@@ -568,26 +492,14 @@ impl Notify {
         }
         self.global_bitmap = sim_bitmap;
 
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Assign as u64,
-            status: ErrorCode::Ok,
-        }
+        NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::Ok)
     }
 
     fn nfy_unassign(&mut self, req: NotifyReq) -> NfySetupRsp {
         let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
             Some(idx) => idx,
             None => {
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Unassign, &req, ErrorCode::InvalidParameters);
             }
         };
 
@@ -595,13 +507,7 @@ impl Notify {
         for (cookie, _id, _ntype) in req.notifications.iter().take(req.count as usize) {
             if self.nfy_find_matching_cookie(entry_index, *cookie).is_none() {
                 error!("No matching cookie for unassign: {cookie}");
-                return NfySetupRsp {
-                    reserved: 0,
-                    sender_uuid: req.sender_uuid,
-                    receiver_uuid: req.receiver_uuid,
-                    msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
-                    status: ErrorCode::InvalidParameters,
-                };
+                return NfySetupRsp::respond(MessageID::Unassign, &req, ErrorCode::InvalidParameters);
             }
         }
 
@@ -619,13 +525,7 @@ impl Notify {
         }
         self.global_bitmap = new_bitmap;
 
-        NfySetupRsp {
-            reserved: 0,
-            sender_uuid: req.sender_uuid,
-            receiver_uuid: req.receiver_uuid,
-            msg_info: MESSAGE_INFO_DIR_RESP + MessageID::Unassign as u64,
-            status: ErrorCode::Ok,
-        }
+        NfySetupRsp::respond(MessageID::Unassign, &req, ErrorCode::Ok)
     }
 }
 
