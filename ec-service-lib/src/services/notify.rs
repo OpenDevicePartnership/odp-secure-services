@@ -8,11 +8,22 @@ use uuid::{uuid, Uuid};
 const NOTIFY_MAX_SERVICES: usize = 16;
 const NOTIFY_MAX_MAPPINGS: usize = 64;
 
-// Maximum number of mappings that can be registered in a single request, as restricted
-// by the number of registers available.
-const NOTIFY_MAX_MAPPINGS_PER_REQ: usize = 8;
+// Maximum number of notification tuples that fit in a single request,
+// bounded by the available payload registers (x7..x13).
+const NOTIFY_MAX_TUPLES_PER_REQ: usize = 7;
 
 const MESSAGE_INFO_DIR_RESP: u64 = 0x100; // Base for direct response messages
+
+// Notify request wire layout (FF-A direct-request payload registers).
+const NOTIFY_COUNT_REG: usize = 6; // x6: tuple count (lower 9 bits)
+const NOTIFY_TUPLE_BASE_REG: usize = 7; // x7..: one register per tuple
+const NOTIFY_COUNT_MASK: u64 = 0x1ff;
+
+// Per-tuple bit layout within a register.
+const NOTIFY_COOKIE_SHIFT: u64 = 32;
+const NOTIFY_ID_SHIFT: u64 = 23;
+const NOTIFY_ID_MASK: u64 = 0x1ff;
+const NOTIFY_TYPE_PER_VCPU_BIT: u64 = 0x1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
 #[repr(u8)]
@@ -53,16 +64,17 @@ struct NotifyReq {
     receiver_uuid: Uuid,
     msg_info: MessageInfo,
     count: u8,
-    notifications: [(u32, u16, NotifyType); 7], // Cookie, Notification ID, Type
+    notifications: [(u32, u16, NotifyType); NOTIFY_MAX_TUPLES_PER_REQ], // Cookie, Notification ID, Type
 }
 
 impl NotifyReq {
     fn extract_tuple(value: u64) -> (u32, u16, NotifyType) {
-        let cookie = (value >> 32) as u32;
-        let id = ((value >> 23) & 0x1FF) as u16;
-        let ntype = match (value & 0x1) != 0 {
-            false => NotifyType::Global,
-            true => NotifyType::PerVcpu,
+        let cookie = (value >> NOTIFY_COOKIE_SHIFT) as u32;
+        let id = ((value >> NOTIFY_ID_SHIFT) & NOTIFY_ID_MASK) as u16;
+        let ntype = if value & NOTIFY_TYPE_PER_VCPU_BIT != 0 {
+            NotifyType::PerVcpu
+        } else {
+            NotifyType::Global
         };
         (cookie, id, ntype)
     }
@@ -77,10 +89,11 @@ impl From<MsgSendDirectReq2> for NotifyReq {
         let receiver_uuid =
             Uuid::from_u128_le(((payload.register_at(4) as u128) << 64) | (payload.register_at(3) as u128));
         let msg_info = MessageInfo::from_raw(payload.register_at(5));
-        let count = (payload.register_at(6) & 0x1ff).min(7) as u8; // Count is lower 9 bits
-        let mut notifications = [(0, 0, NotifyType::Global); 7];
+        let count =
+            (payload.register_at(NOTIFY_COUNT_REG) & NOTIFY_COUNT_MASK).min(NOTIFY_MAX_TUPLES_PER_REQ as u64) as u8;
+        let mut notifications = [(0, 0, NotifyType::Global); NOTIFY_MAX_TUPLES_PER_REQ];
         for (i, notif) in notifications.iter_mut().enumerate().take(count as usize) {
-            *notif = NotifyReq::extract_tuple(payload.register_at(7 + i));
+            *notif = NotifyReq::extract_tuple(payload.register_at(NOTIFY_TUPLE_BASE_REG + i));
         }
 
         NotifyReq {
@@ -209,6 +222,22 @@ impl Notify {
         self.entries.iter().position(|entry| !entry.in_use)
     }
 
+    // Returns the entry index for `uuid`, allocating and initializing a fresh
+    // entry slot if the service is not yet registered. None only when every
+    // entry slot is already in use.
+    fn find_or_create_entry(&mut self, uuid: Uuid) -> Option<usize> {
+        if let Some(index) = self.nfy_find_entry(uuid) {
+            return Some(index);
+        }
+        let empty = self.nfy_find_empty_slot()?;
+        self.entries[empty] = NfyEntry {
+            service_uuid: uuid,
+            in_use: true,
+            mappings: [NfyMapping::default(); NOTIFY_MAX_MAPPINGS],
+        };
+        Some(empty)
+    }
+
     fn nfy_find_matching_cookie(&self, entry_index: usize, cookie: u32) -> Option<usize> {
         if entry_index >= NOTIFY_MAX_SERVICES {
             return None;
@@ -234,43 +263,35 @@ impl Notify {
 
         // loop through the mappings in the req and register them
         // We will iterate through the notifications, with a maximum of req.count
-        for (cookie, id, ntype) in req.notifications.iter().take(req.count as usize) {
-            let mut applied = false;
-            if let Some(_mapping_index) = self.nfy_find_matching_cookie(entry_index, *cookie) {
-                // If we found a matching cookie, this does not make sense, so we return an error
+        for &(cookie, id, ntype) in req.notifications.iter().take(req.count as usize) {
+            if self.nfy_find_matching_cookie(entry_index, cookie).is_some() {
+                // A matching cookie already exists, which is a conflict.
                 error!("Found matching cookie for entry {entry_index}: {cookie}");
                 return ErrorCode::InvalidParameters;
-            } else if nfy_bitmask(*id).is_none_or(|b| temp_bitmask & b != 0) {
-                // If the id is out of range or bit is already set, reject
-                error!("Bitmask conflict or out-of-range id for entry {entry_index}: {id}");
-                return ErrorCode::InvalidParameters;
-            } else {
-                // No matching cookie found, we can register this mapping
-                // We will use the first empty mapping slot in the entry
-                let cookie = *cookie;
-                let id = *id;
-                let ntype = *ntype;
+            }
 
-                let entry = &mut temp_entries[entry_index];
-                for mapping in &mut entry.mappings {
-                    if !mapping.in_use {
-                        info!("Mapping: cookie: {cookie}, id: {id}, ntype: {ntype:?}");
-                        mapping.cookie = cookie;
-                        mapping.id = id;
-                        mapping.ntype = ntype;
-                        mapping.src_id = req.src_id;
-                        mapping.in_use = true;
-                        temp_bitmask |= nfy_bitmask(id).unwrap(); // Safe: validated above
-                        applied = true;
-                        break;
-                    }
-                }
+            let Some(bit) = nfy_bitmask(id) else {
+                error!("Notification id out of range for entry {entry_index}: {id}");
+                return ErrorCode::InvalidParameters;
+            };
+            if temp_bitmask & bit != 0 {
+                error!("Bitmask already set for entry {entry_index}: {id}");
+                return ErrorCode::InvalidParameters;
             }
-            if !applied {
+
+            // Claim the first free mapping slot in the entry.
+            let entry = &mut temp_entries[entry_index];
+            let Some(mapping) = entry.mappings.iter_mut().find(|m| !m.in_use) else {
                 error!("Unable to apply mapping for cookie: {cookie}, id: {id}, ntype: {ntype:?}");
-                // Something went wrong, we could not apply the mapping, just bail here
                 return ErrorCode::NoMemory;
-            }
+            };
+            info!("Mapping: cookie: {cookie}, id: {id}, ntype: {ntype:?}");
+            mapping.cookie = cookie;
+            mapping.id = id;
+            mapping.ntype = ntype;
+            mapping.src_id = req.src_id;
+            mapping.in_use = true;
+            temp_bitmask |= bit;
         }
 
         // If we reach here, we have successfully registered the mappings, on to
@@ -355,78 +376,38 @@ impl Notify {
         info!("receiver_uuid: {:?}", req.receiver_uuid);
         info!("Count: {:?}", req.count);
 
-        if req.count == 0 || req.count >= NOTIFY_MAX_MAPPINGS_PER_REQ as u8 {
-            // If the count is zero or exceeds the maximum allowed mappings per request,
-            // we cannot register the service
-            error!("Invalid parameters: count is zero or exceeds maximum allowed mappings per request");
+        if !(1..=NOTIFY_MAX_TUPLES_PER_REQ as u8).contains(&req.count) {
+            error!(
+                "Invalid parameters: count must be 1..={NOTIFY_MAX_TUPLES_PER_REQ}, got {}",
+                req.count
+            );
             return NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::InvalidParameters);
         }
 
-        // First check to see if the service is already registered
-        let entry;
-        if let Some(entry_index) = self.nfy_find_entry(req.receiver_uuid) {
-            // If not registered, we will find an empty slot
-            info!("Service already registered, reusing entry: {entry_index}");
-            entry = Some(entry_index);
-        } else if let Some(empty_slot) = self.nfy_find_empty_slot() {
-            // If we found an empty slot, we can register the service
-            self.entries[empty_slot].in_use = true;
-            self.entries[empty_slot].service_uuid = req.receiver_uuid;
-            self.entries[empty_slot].mappings = [NfyMapping::default(); NOTIFY_MAX_MAPPINGS];
-            info!("Service registered, entry: {empty_slot}");
-            entry = Some(empty_slot);
-        } else {
-            // If no empty slot is found, we cannot register the service
+        let Some(entry_index) = self.find_or_create_entry(req.receiver_uuid) else {
             return NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::NoMemory);
-        }
+        };
 
-        if let Some(service_entry) = entry {
-            // Now we can process the request
-            let res = self.nfy_register_mapping(service_entry, req);
-
-            // Regardless of the result, we will return a response
-            return NfySetupRsp::respond(MessageID::Setup, &req, res);
-        }
-
-        NfySetupRsp::respond(MessageID::Setup, &req, ErrorCode::NoMemory)
+        let res = self.nfy_register_mapping(entry_index, req);
+        NfySetupRsp::respond(MessageID::Setup, &req, res)
     }
 
     fn nfy_destroy(&mut self, req: NotifyReq) -> NfySetupRsp {
-        // First check to see if the service is already registered
-        let entry = match self.nfy_find_entry(req.receiver_uuid) {
-            Some(entry_index) => {
-                // If registered, we will use the entry index
-                info!("Service found, entry: {entry_index}");
-                entry_index
-            }
-            None => {
-                // If not registered, we cannot unregister the service
-                error!("Service not found for UUID: {:?}", req.receiver_uuid);
-                // If no service entry is not found, we cannot unregister the service
-                return NfySetupRsp::respond(MessageID::Destroy, &req, ErrorCode::InvalidParameters);
-            }
+        let Some(entry) = self.nfy_find_entry(req.receiver_uuid) else {
+            error!("Service not found for UUID: {:?}", req.receiver_uuid);
+            return NfySetupRsp::respond(MessageID::Destroy, &req, ErrorCode::InvalidParameters);
         };
 
-        // Now we can process the request
         let res = self.nfy_unregister_mapping(entry, req);
-
-        // Regardless of the result, we will return a response
         NfySetupRsp::respond(MessageID::Destroy, &req, res)
     }
 
     fn nfy_add(&mut self, req: NotifyReq) -> NfySetupRsp {
-        if req.count == 0 || req.count >= NOTIFY_MAX_MAPPINGS_PER_REQ as u8 {
+        if !(1..=NOTIFY_MAX_TUPLES_PER_REQ as u8).contains(&req.count) {
             return NfySetupRsp::respond(MessageID::Add, &req, ErrorCode::InvalidParameters);
         }
 
-        let entry_index = if let Some(idx) = self.nfy_find_entry(req.receiver_uuid) {
-            idx
-        } else if let Some(empty) = self.nfy_find_empty_slot() {
-            self.entries[empty].in_use = true;
-            self.entries[empty].service_uuid = req.receiver_uuid;
-            self.entries[empty].mappings = [NfyMapping::default(); NOTIFY_MAX_MAPPINGS];
-            empty
-        } else {
+        let Some(entry_index) = self.find_or_create_entry(req.receiver_uuid) else {
             return NfySetupRsp::respond(MessageID::Add, &req, ErrorCode::NoMemory);
         };
 
@@ -435,11 +416,8 @@ impl Notify {
     }
 
     fn nfy_remove(&mut self, req: NotifyReq) -> NfySetupRsp {
-        let entry = match self.nfy_find_entry(req.receiver_uuid) {
-            Some(idx) => idx,
-            None => {
-                return NfySetupRsp::respond(MessageID::Remove, &req, ErrorCode::InvalidParameters);
-            }
+        let Some(entry) = self.nfy_find_entry(req.receiver_uuid) else {
+            return NfySetupRsp::respond(MessageID::Remove, &req, ErrorCode::InvalidParameters);
         };
 
         let res = self.nfy_unregister_mapping(entry, req);
@@ -447,11 +425,8 @@ impl Notify {
     }
 
     fn nfy_assign(&mut self, req: NotifyReq) -> NfySetupRsp {
-        let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
-            Some(idx) => idx,
-            None => {
-                return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
-            }
+        let Some(entry_index) = self.nfy_find_entry(req.receiver_uuid) else {
+            return NfySetupRsp::respond(MessageID::Assign, &req, ErrorCode::InvalidParameters);
         };
 
         // Pre-validation pass: check all tuples before mutating any state.
@@ -496,11 +471,8 @@ impl Notify {
     }
 
     fn nfy_unassign(&mut self, req: NotifyReq) -> NfySetupRsp {
-        let entry_index = match self.nfy_find_entry(req.receiver_uuid) {
-            Some(idx) => idx,
-            None => {
-                return NfySetupRsp::respond(MessageID::Unassign, &req, ErrorCode::InvalidParameters);
-            }
+        let Some(entry_index) = self.nfy_find_entry(req.receiver_uuid) else {
+            return NfySetupRsp::respond(MessageID::Unassign, &req, ErrorCode::InvalidParameters);
         };
 
         // Pre-validation pass: ensure all cookies exist before mutating.
@@ -537,12 +509,9 @@ impl Service for Notify {
         let req: NotifyReq = msg.clone().into();
         debug!("Received notify command: {:?}", req.msg_info.message_id());
 
-        let message_id = match req.msg_info.message_id() {
-            Some(id) => id,
-            None => {
-                error!("Invalid notify message ID: {}", req.msg_info.0 & 0b111);
-                return Err(odp_ffa::Error::Other("Invalid notify message ID"));
-            }
+        let Some(message_id) = req.msg_info.message_id() else {
+            error!("Invalid notify message ID: {}", req.msg_info.0 & 0b111);
+            return Err(odp_ffa::Error::Other("Invalid notify message ID"));
         };
 
         let payload = match message_id {
@@ -630,10 +599,9 @@ mod tests {
 
     #[test]
     fn test_setup_overflow_count_clamped() {
-        // NotifyReq::from() clamps count with .min(7), so a raw count of
-        // NOTIFY_MAX_MAPPINGS_PER_REQ (8) becomes 7. Verify the request
-        // succeeds with 7 distinct valid tuples rather than hitting the
-        // `count >= NOTIFY_MAX_MAPPINGS_PER_REQ` guard.
+        // NotifyReq::from() clamps count to NOTIFY_MAX_TUPLES_PER_REQ (7), so a
+        // raw count above the max is clamped rather than rejected. Verify a raw
+        // count of 8 still registers the 7 supplied tuples and succeeds.
         let mut svc = Notify::new();
         let tuples: [(u32, u16, u8); 7] = [
             (100, 1, 0),
@@ -644,7 +612,7 @@ mod tests {
             (105, 6, 0),
             (106, 7, 0),
         ];
-        let msg = notify_req(MessageID::Setup, NOTIFY_MAX_MAPPINGS_PER_REQ as u8, &tuples);
+        let msg = notify_req(MessageID::Setup, NOTIFY_MAX_TUPLES_PER_REQ as u8 + 1, &tuples);
         let resp = svc.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_error_code(&resp), ErrorCode::Ok as i64);
     }
