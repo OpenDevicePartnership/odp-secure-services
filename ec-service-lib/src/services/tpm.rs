@@ -155,6 +155,9 @@ pub const TPM_MINOR_VER: u64 = 0x0;
 pub const NUM_LOCALITIES: u8 = 5;
 const NO_ACTIVE_LOCALITY: u8 = NUM_LOCALITIES; // Invalid locality
 
+// GetFeatureInfo payload flags. Bit 0 = TPM notifications supported.
+const TPM_FEATURE_NOTIFICATIONS_SUPPORTED: u64 = 1 << 0;
+
 // ---------------------------------------------------------------------------
 // TPM Service States
 // ---------------------------------------------------------------------------
@@ -512,14 +515,12 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 
     fn get_feature_info_handler(&self, request: &TpmRequest, response: &mut TpmResponse) -> TpmStatus {
-        // Feature ID is in the function field (Arg1)
-        // Currently only notification feature (RegisterForNotification) is queryable
+        // Feature ID is in the function field (Arg1). Only the notification
+        // feature (RegisterForNotification) is currently queryable.
         if request.function == TpmFunction::RegisterForNotification as u64 {
-            // Return feature flags in payload: bit 0 = notifications supported
-            response.tpm_payload = 0x1;
+            response.tpm_payload = TPM_FEATURE_NOTIFICATIONS_SUPPORTED;
             TpmStatus::OkResultsReturned
         } else {
-            // Unknown feature ID
             TpmStatus::NotSup
         }
     }
@@ -642,6 +643,12 @@ impl<S: TpmSstOps> TpmService<S> {
         // Initialize the TPM Service State Translation Library.
         self.sst.init();
 
+        self.reset_runtime_state();
+    }
+
+    // Resets the volatile runtime state shared by init and deinit. Does NOT
+    // touch per-locality open/closed state (deinit handles that separately).
+    fn reset_runtime_state(&mut self) {
         self.current_state = TpmState::Idle;
         self.active_locality = NO_ACTIVE_LOCALITY;
         self.notification_registered = false;
@@ -649,10 +656,8 @@ impl<S: TpmSstOps> TpmService<S> {
 
     /// De-initializes the TPM service (equivalent to `TpmServiceDeInit`).
     pub fn deinit(&mut self) {
-        self.current_state = TpmState::Idle;
-        self.active_locality = NO_ACTIVE_LOCALITY;
+        self.reset_runtime_state();
         self.locality_states = [TpmLocalityState::Closed; NUM_LOCALITIES as usize];
-        self.notification_registered = false;
     }
 
     /// Test-only: write a specific value to a CRB register in the internal CRB.
