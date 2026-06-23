@@ -1,7 +1,5 @@
 * @OpenDevicePartnership/odp-platform-maintainers
-ec-service-lib/src/services/tpm.rs @Raymond-MS
-ec-service-lib/src/services/tpm_sst.rs @Raymond-MS
-ec-service-lib/src/services/tpm_stub.rs @Raymond-MS
+/ec-service-lib/src/services/tpm*.rs @Raymond-MS
 
 # Any changes in the supply-chain folder needs approval
 # from auditors as it relates to cargo vet
