@@ -1,29 +1,47 @@
-use crate::service::Service;
-use crate::Result;
-use log::{debug, error};
-use odp_ffa::{DirectMessagePayload, Function, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2, Yield};
-use uuid::{uuid, Builder, Uuid};
+//! `Thermal` — FFA service that relays Normal-World Thermal requests to
+//! the EC over MCTP. Mirrors [`crate::services::battery::Battery`].
+//!
+//! Service id `0x09`; commands `GetTmp=1, SetThrs=2, GetThrs=3, SetScp=4,
+//! GetVar=5, SetVar=6`. Only `GetTmp` is relayed so far.
 
-// Protocol CMD definitions for Thermal
-const EC_THM_GET_TMP: u8 = 0x1;
-const EC_THM_SET_THRS: u8 = 0x2;
-const EC_THM_GET_THRS: u8 = 0x3;
-const EC_THM_SET_SCP: u8 = 0x4;
-const EC_THM_GET_VAR: u8 = 0x5;
-const EC_THM_SET_VAR: u8 = 0x6;
+use core::cell::RefCell;
 
-#[derive(Default)]
-struct GenericRsp {
-    status: i64,
+use uuid::{uuid, Uuid};
+
+use crate::services::ec_relay::{EcRelayError, Relay};
+use crate::{Result, Service};
+use odp_ffa::{DirectMessagePayload, Error as FfaError, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
+
+pub const THERMAL_SERVICE_ID: u8 = 0x09;
+
+/// Thermal command ids (FFA request byte 0 / ODP message id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
+#[repr(u16)]
+pub enum ThermalCommand {
+    GetTmp = 1,
+    SetThrs = 2,
+    GetThrs = 3,
+    SetScp = 4,
+    GetVar = 5,
+    SetVar = 6,
 }
 
-impl From<GenericRsp> for DirectMessagePayload {
-    fn from(value: GenericRsp) -> Self {
-        DirectMessagePayload::from_iter(value.status.to_le_bytes())
+pub const GET_TMP_RESPONSE_BODY_LEN: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThermalError {
+    Relay(EcRelayError),
+    UnexpectedResponse,
+}
+
+impl From<EcRelayError> for ThermalError {
+    fn from(e: EcRelayError) -> Self {
+        ThermalError::Relay(e)
     }
 }
 
-#[derive(Default)]
+/// FFA reply for `GetTmp` (`temp` = EC u32 DeciKelvin; `status: -1` on relay failure).
+#[derive(Default, Debug, Clone, Copy)]
 struct TempRsp {
     status: i64,
     temp: u64,
@@ -35,181 +53,131 @@ impl From<TempRsp> for DirectMessagePayload {
     }
 }
 
-#[derive(Default)]
-struct ThresholdReq {
-    id: u8,
-    timeout: u32,
-    low_temp: u32,
-    high_temp: u32,
+pub struct Thermal<'r, R: Relay> {
+    relay: &'r RefCell<R>,
 }
-impl From<&DirectMessagePayload> for ThresholdReq {
-    fn from(msg: &DirectMessagePayload) -> ThresholdReq {
-        ThresholdReq {
-            id: msg.u8_at(1),
-            timeout: msg.u16_at(3) as u32,
-            low_temp: msg.u32_at(5),
-            high_temp: msg.u32_at(9),
-        }
+
+impl<'r, R: Relay> Thermal<'r, R> {
+    pub fn new(relay: &'r RefCell<R>) -> Self {
+        Self { relay }
     }
-}
 
-#[derive(Default)]
-struct ReadVarReq {
-    id: u8,
-    len: u16,
-    var_uuid: Uuid,
-}
-
-impl From<ReadVarReq> for DirectMessagePayload {
-    fn from(value: ReadVarReq) -> Self {
-        let iter = value
-            .id
-            .to_le_bytes()
-            .into_iter()
-            .chain(value.len.to_le_bytes())
-            .chain(value.var_uuid.as_bytes().iter().copied());
-
-        DirectMessagePayload::from_iter(iter)
+    /// Relay a GetTmp round-trip; returns the EC's `u32` DeciKelvin.
+    pub fn get_temperature(&self, instance_id: u8) -> core::result::Result<u32, ThermalError> {
+        self.relay
+            .borrow_mut()
+            .invoke_request(
+                THERMAL_SERVICE_ID,
+                ThermalCommand::GetTmp.into(),
+                &[instance_id],
+                GET_TMP_RESPONSE_BODY_LEN,
+                |payload| u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+            )
+            .map_err(ThermalError::Relay)
     }
 }
 
-impl From<&DirectMessagePayload> for ReadVarReq {
-    fn from(msg: &DirectMessagePayload) -> ReadVarReq {
-        ReadVarReq {
-            id: msg.u8_at(1),
-            len: msg.u16_at(2),
-            var_uuid: Builder::from_slice_le(msg.slice(4..20)).unwrap().into_uuid(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct ReadVarRsp {
-    status: i64,
-    data: u32,
-}
-
-impl From<ReadVarRsp> for DirectMessagePayload {
-    fn from(value: ReadVarRsp) -> Self {
-        DirectMessagePayload::from_iter(value.status.to_le_bytes().into_iter().chain(value.data.to_le_bytes()))
-    }
-}
-
-#[derive(Default)]
-struct SetVarReq {
-    id: u8,
-    len: u16,
-    var_uuid: Uuid,
-    data: u32,
-}
-
-impl From<&DirectMessagePayload> for SetVarReq {
-    fn from(msg: &DirectMessagePayload) -> SetVarReq {
-        SetVarReq {
-            id: msg.u8_at(1),
-            len: msg.u16_at(2),
-            var_uuid: Builder::from_slice_le(msg.slice(4..20)).unwrap().into_uuid(),
-            data: msg.u32_at(20),
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct Thermal {}
-
-impl Thermal {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn get_temperature(&self, msg: &MsgSendDirectReq2) -> TempRsp {
-        debug!("get_temperature sensor 0x{:x}", msg.payload().u8_at(1));
-
-        // Tell OS to delay 1 ms
-        Yield::new(0x100000000).exec().unwrap();
-
-        TempRsp {
-            status: 0x0,
-            temp: 0x1234,
-        }
-    }
-
-    fn set_threshold(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
-        let req: ThresholdReq = msg.payload().into();
-        debug!(
-            "set_threshold temperature sensor 0x{:x}
-                Timeout: 0x{:x}
-                LowThreshold: 0x{:x}
-                HighThreshold: 0x{:x}",
-            req.id, req.timeout, req.low_temp, req.high_temp
-        );
-
-        GenericRsp { status: 0x0 }
-    }
-
-    fn get_threshold(&self, _msg: &MsgSendDirectReq2) -> GenericRsp {
-        GenericRsp { status: 0x0 }
-    }
-
-    fn set_cooling_policy(&self, _msg: &MsgSendDirectReq2) -> GenericRsp {
-        GenericRsp { status: 0x0 }
-    }
-
-    fn get_variable(&self, msg: &MsgSendDirectReq2) -> ReadVarRsp {
-        let req: ReadVarReq = msg.payload().into();
-        debug!(
-            "get_variable instance id: 0x{:x}
-                length: 0x{:x}
-                uuid: {}",
-            req.id, req.len, req.var_uuid
-        );
-
-        // Only support DWORD customized IO for now
-        if req.len != 4 {
-            error!("get_variable only supports DWORD read")
-        }
-
-        ReadVarRsp {
-            status: 0x0,
-            data: 0xdeadbeef,
-        }
-    }
-
-    fn set_variable(&self, msg: &MsgSendDirectReq2) -> GenericRsp {
-        let req: SetVarReq = msg.payload().into();
-        debug!(
-            "get_variable instance id: 0x{:x}
-                length: 0x{:x}
-                uuid: {}
-                data: 0x{:x}",
-            req.id, req.len, req.var_uuid, req.data
-        );
-
-        GenericRsp { status: 0x0 }
-    }
-}
-
-impl Service for Thermal {
+impl<R: Relay> Service for Thermal<'_, R> {
     const UUID: Uuid = uuid!("31f56da7-593c-4d72-a4b3-8fc7171ac073");
     const NAME: &'static str = "Thermal";
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let cmd = msg.payload().u8_at(0);
-        debug!("Received ThmMgmt command 0x{:x}", cmd);
-
-        let payload = match cmd {
-            EC_THM_GET_TMP => DirectMessagePayload::from(self.get_temperature(&msg)),
-            EC_THM_SET_THRS => DirectMessagePayload::from(self.set_threshold(&msg)),
-            EC_THM_GET_THRS => DirectMessagePayload::from(self.get_threshold(&msg)),
-            EC_THM_SET_SCP => DirectMessagePayload::from(self.set_cooling_policy(&msg)),
-            EC_THM_GET_VAR => DirectMessagePayload::from(self.get_variable(&msg)),
-            EC_THM_SET_VAR => DirectMessagePayload::from(self.set_variable(&msg)),
-            _ => {
-                error!("Unknown Thermal Command: {}", cmd);
-                return Err(odp_ffa::Error::Other("Unknown Thermal Command"));
-            }
+        let Ok(command) = ThermalCommand::try_from(cmd as u16) else {
+            return Err(FfaError::Other("Unknown Thermal Command"));
         };
 
-        Ok(MsgSendDirectResp2::from_req_with_payload(&msg, payload))
+        match command {
+            ThermalCommand::GetTmp => {
+                let instance_id = msg.payload().u8_at(1);
+                let rsp = match self.get_temperature(instance_id) {
+                    Ok(dk) => TempRsp {
+                        status: 0,
+                        temp: dk as u64,
+                    },
+                    Err(_) => TempRsp { status: -1, temp: 0 },
+                };
+                Ok(MsgSendDirectResp2::from_req_with_payload(
+                    &msg,
+                    DirectMessagePayload::from(rsp),
+                ))
+            }
+            // The other five commands are relayed in a follow-up.
+            ThermalCommand::SetThrs
+            | ThermalCommand::GetThrs
+            | ThermalCommand::SetScp
+            | ThermalCommand::GetVar
+            | ThermalCommand::SetVar => Err(FfaError::Other("Thermal command not yet relayed")),
+        }
+    }
+}
+
+// Wire-format gate: round-trips bytes through the EC's own serializer so
+// any drift fails the build.
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::ec_relay::test_util::{
+        frame_response_packets, strip_mctp_framing, LoopbackTransport, TimeoutUart,
+    };
+    use crate::services::ec_relay::{self, EcRelay, MctpSerialTransport};
+    use embedded_services::relay::SerializableMessage;
+    use thermal_service_relay::{DeciKelvin, ThermalRequest, ThermalResponse};
+
+    #[test]
+    fn produces_canonical_get_tmp_request_bytes() {
+        // EC GetTmp response: 2982 dK ≈ 25 °C.
+        let mut response_payload = [0u8; GET_TMP_RESPONSE_BODY_LEN];
+        let n = ThermalResponse::ThermalGetTmpResponse {
+            temperature: DeciKelvin(2982),
+        }
+        .serialize(&mut response_payload)
+        .expect("ec-side serialize");
+        assert_eq!(n, GET_TMP_RESPONSE_BODY_LEN, "GetTmp response body must be 4 bytes");
+
+        let response_header = ec_relay::build_odp_header(false, THERMAL_SERVICE_ID, ThermalCommand::GetTmp.into());
+        let framed_response = frame_response_packets(response_header, &response_payload);
+
+        let mut transport = LoopbackTransport::new();
+        transport.prime_rx(framed_response.iter().copied());
+        let relay = RefCell::new(EcRelay::new(transport));
+        let svc = Thermal::new(&relay);
+
+        let dk = svc.get_temperature(0x07).expect("relay GetTmp");
+        assert_eq!(dk, 2982);
+
+        // Request bytes: OdpHeader [0x02, 0x09, 0x00, 0x01] + payload [0x07].
+        let tx_bytes = relay.borrow().transport().tx.clone();
+        let inner_tx = strip_mctp_framing(&tx_bytes);
+        assert_eq!(
+            inner_tx,
+            std::vec![0x02, 0x09, 0x00, 0x01, 0x07],
+            "Thermal GetTmp request wire bytes must match the EC's expected encoding exactly"
+        );
+
+        // The SP-produced bytes parse back via the EC's own deserializer.
+        let (is_req, svc_id, _is_err, msg_id) = ec_relay::parse_odp_header(&inner_tx[..4]).expect("parse header");
+        assert!(is_req, "must be a request");
+        assert_eq!(svc_id, THERMAL_SERVICE_ID);
+        assert_eq!(msg_id, u16::from(ThermalCommand::GetTmp));
+        let decoded =
+            ThermalRequest::deserialize(msg_id, &inner_tx[4..]).expect("ec-side decoder must accept SP-produced bytes");
+        assert!(
+            matches!(decoded, ThermalRequest::ThermalGetTmpRequest { instance_id: 0x07 }),
+            "EC-side decoder must reconstruct the original request variant"
+        );
+    }
+
+    #[test]
+    fn get_temperature_surfaces_transport_read_timeout_as_relay_err() {
+        let transport = MctpSerialTransport::new(TimeoutUart);
+        let relay = RefCell::new(EcRelay::new(transport));
+        let svc = Thermal::new(&relay);
+        let err = svc.get_temperature(0).expect_err("timeout should propagate");
+        assert_eq!(err, ThermalError::Relay(EcRelayError::TransportReadTimeout));
     }
 }

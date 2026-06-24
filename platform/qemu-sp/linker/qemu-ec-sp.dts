@@ -90,14 +90,12 @@
 			attributes = <0x3>;
 		};
 
-		/* EC uart */
-		/*
+		/* EC uart — secure PL011 @ 0x09040000 (the EC MCTP link). */
 		ec_uart {
 			description = "ec uart";
 			base-address = <0x0 0x09040000>;
 			pages-count = <0x1>;
 			attributes = <0x3>;
 		};
-		*/
 	};
 };

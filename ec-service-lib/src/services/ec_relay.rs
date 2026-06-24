@@ -151,6 +151,9 @@ pub enum EcRelayError {
     TransportWrite,
     /// Transport-layer read failure (UART RX timeout, etc.).
     TransportRead,
+    /// Read budget exhausted before a framed response arrived. Distinct
+    /// from `TransportRead` so callers can fail deterministically.
+    TransportReadTimeout,
     /// `MctpPacketContext::serialize_packet` failed.
     MctpSerialize(&'static str),
     /// Bytes received from transport could not be parsed as a complete
@@ -220,9 +223,14 @@ impl<U: embedded_io::Read + embedded_io::Write> OdpTransport for MctpSerialTrans
                 return Err(EcRelayError::MctpRecvIncomplete);
             }
             let mut byte = [0u8; 1];
-            self.uart
-                .read_exact(&mut byte)
-                .map_err(|_| EcRelayError::TransportRead)?;
+            self.uart.read_exact(&mut byte).map_err(|e| match e {
+                embedded_io::ReadExactError::Other(inner)
+                    if embedded_io::Error::kind(&inner) == embedded_io::ErrorKind::TimedOut =>
+                {
+                    EcRelayError::TransportReadTimeout
+                }
+                _ => EcRelayError::TransportRead,
+            })?;
             buf[filled] = byte[0];
             filled += 1;
             if byte[0] == SERIAL_END_FLAG {
@@ -276,6 +284,32 @@ pub trait Relay {
     ) -> Result<R, EcRelayError>
     where
         F: FnOnce(OdpResponse<'_>) -> Result<R, EcRelayError>;
+
+    /// Build the request header, invoke, and validate the response
+    /// envelope (same service + message id, at least `min_body_len`
+    /// bytes) before handing the parser a `min_body_len`-byte slice.
+    fn invoke_request<R, F>(
+        &mut self,
+        service_id: u8,
+        message_id: u16,
+        request_body: &[u8],
+        min_body_len: usize,
+        parse_body: F,
+    ) -> Result<R, EcRelayError>
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        let request_header = build_odp_header(true, service_id, message_id);
+        self.invoke(request_header, request_body, |response| {
+            if response.service_id != service_id || response.message_id != message_id {
+                return Err(EcRelayError::UnexpectedOdpService);
+            }
+            if response.body.len() < min_body_len {
+                return Err(EcRelayError::BodyTooShort);
+            }
+            Ok(parse_body(&response.body[..min_body_len]))
+        })
+    }
 }
 
 /// Owning relay handle to the EC firmware over an `OdpTransport`. Owns
@@ -457,6 +491,19 @@ pub(crate) mod test_util {
         }
     }
 
+    /// Strip MCTP framing; returns the inner body (ODP header + payload).
+    pub fn strip_mctp_framing(framed: &[u8]) -> Vec<u8> {
+        use mctp_rs::{MctpPacketContext, MctpSerialMedium};
+        let mut buf = [0u8; 256];
+        let mut ctx = MctpPacketContext::<MctpSerialMedium>::new(MctpSerialMedium, &mut buf);
+        let message = ctx
+            .deserialize_packet(framed)
+            .expect("deserialize_packet ok")
+            .expect("complete message");
+        assert_eq!(message.message_buffer.message_type(), ODP_MESSAGE_TYPE);
+        message.message_buffer.body().to_vec()
+    }
+
     impl OdpTransport for LoopbackTransport {
         fn send_packet(&mut self, packet: &[u8]) -> Result<(), EcRelayError> {
             self.tx.extend_from_slice(packet);
@@ -477,6 +524,47 @@ pub(crate) mod test_util {
                     return Ok(filled);
                 }
             }
+        }
+    }
+
+    /// Test UART that always reports a timed-out read.
+    pub struct TimeoutUart;
+
+    impl embedded_io::ErrorType for TimeoutUart {
+        type Error = TimeoutUartErr;
+    }
+
+    #[derive(Debug)]
+    pub struct TimeoutUartErr;
+
+    impl embedded_io::Error for TimeoutUartErr {
+        fn kind(&self) -> embedded_io::ErrorKind {
+            embedded_io::ErrorKind::TimedOut
+        }
+    }
+
+    impl core::fmt::Display for TimeoutUartErr {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "timeout")
+        }
+    }
+
+    impl core::error::Error for TimeoutUartErr {}
+
+    impl embedded_io::Read for TimeoutUart {
+        fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
+            Err(TimeoutUartErr)
+        }
+    }
+
+    impl embedded_io::Write for TimeoutUart {
+        fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            // Swallow writes so tests reach the RX timeout path
+            // (`write_all` panics on `Ok(0)`).
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
@@ -525,5 +613,14 @@ mod tests {
     #[test]
     fn parse_odp_header_rejects_short_buffer() {
         assert!(parse_odp_header(&[0x02, 0x08, 0x00]).is_err());
+    }
+
+    #[test]
+    fn recv_framed_packet_maps_timed_out_kind_to_transport_read_timeout() {
+        use test_util::TimeoutUart;
+        let mut t = MctpSerialTransport::new(TimeoutUart);
+        let mut buf = [0u8; 64];
+        let err = t.recv_framed_packet(&mut buf).expect_err("timeout should surface");
+        assert_eq!(err, EcRelayError::TransportReadTimeout);
     }
 }

@@ -39,6 +39,7 @@ mctp-rs = { git = "https://github.com/OpenDevicePartnership/embedded-services.gi
 embedded-services = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
 battery-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
 battery-service-interface = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+thermal-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
 embedded-io = { version = "0.7", default-features = false }
 log = { version = "0.4", default-features = false }
 mockall = "0.13.1"
