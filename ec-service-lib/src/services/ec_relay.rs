@@ -151,6 +151,11 @@ pub enum EcRelayError {
     TransportWrite,
     /// Transport-layer read failure (UART RX timeout, etc.).
     TransportRead,
+    /// Transport-layer read budget exhausted (EC did not produce a
+    /// framed response within the bounded poll budget). Distinct
+    /// from `TransportRead` so callers can surface a deterministic
+    /// FFA reply (e.g. `status: -1`) rather than retrying.
+    TransportReadTimeout,
     /// `MctpPacketContext::serialize_packet` failed.
     MctpSerialize(&'static str),
     /// Bytes received from transport could not be parsed as a complete
@@ -220,9 +225,14 @@ impl<U: embedded_io::Read + embedded_io::Write> OdpTransport for MctpSerialTrans
                 return Err(EcRelayError::MctpRecvIncomplete);
             }
             let mut byte = [0u8; 1];
-            self.uart
-                .read_exact(&mut byte)
-                .map_err(|_| EcRelayError::TransportRead)?;
+            self.uart.read_exact(&mut byte).map_err(|e| match e {
+                embedded_io::ReadExactError::Other(inner)
+                    if embedded_io::Error::kind(&inner) == embedded_io::ErrorKind::TimedOut =>
+                {
+                    EcRelayError::TransportReadTimeout
+                }
+                _ => EcRelayError::TransportRead,
+            })?;
             buf[filled] = byte[0];
             filled += 1;
             if byte[0] == SERIAL_END_FLAG {
@@ -480,6 +490,47 @@ pub(crate) mod test_util {
         }
     }
 
+    /// Test-only UART that always reports a timed-out read. Used to
+    /// exercise the `MctpSerialTransport::recv_framed_packet`
+    /// error-mapping path.
+    pub struct TimeoutUart;
+
+    impl embedded_io::ErrorType for TimeoutUart {
+        type Error = TimeoutUartErr;
+    }
+
+    #[derive(Debug)]
+    pub struct TimeoutUartErr;
+
+    impl embedded_io::Error for TimeoutUartErr {
+        fn kind(&self) -> embedded_io::ErrorKind {
+            embedded_io::ErrorKind::TimedOut
+        }
+    }
+
+    impl core::fmt::Display for TimeoutUartErr {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "timeout")
+        }
+    }
+
+    impl core::error::Error for TimeoutUartErr {}
+
+    impl embedded_io::Read for TimeoutUart {
+        fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
+            Err(TimeoutUartErr)
+        }
+    }
+
+    impl embedded_io::Write for TimeoutUart {
+        fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
+            Ok(0)
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
     /// Helper used by per-service tests: synthesize a framed response
     /// packet from `(response_header, response_body)` by running the
     /// EC-side framing path (TX from EC_EID to SP_EID).
@@ -525,5 +576,16 @@ mod tests {
     #[test]
     fn parse_odp_header_rejects_short_buffer() {
         assert!(parse_odp_header(&[0x02, 0x08, 0x00]).is_err());
+    }
+
+    #[test]
+    fn recv_framed_packet_maps_timed_out_kind_to_transport_read_timeout() {
+        use test_util::TimeoutUart;
+        let mut t = MctpSerialTransport::new(TimeoutUart);
+        let mut buf = [0u8; 64];
+        let err = t
+            .recv_framed_packet(&mut buf)
+            .expect_err("timeout should surface");
+        assert_eq!(err, EcRelayError::TransportReadTimeout);
     }
 }
