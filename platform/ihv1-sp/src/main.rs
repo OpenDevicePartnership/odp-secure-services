@@ -27,11 +27,11 @@ fn main() -> ! {
     log::info!("FFA version: {}.{}", version.major(), version.minor());
 
     // NOTE: the prior `ec_service_lib::services::Thermal` was a
-    // hardcoded-mock service. T2 replaced it with a relay-backed shim
-    // that needs a UART-backed `EcRelay` to construct. `ihv1-sp` has
-    // no UART driver wired in, so the (functionally no-op) Thermal
-    // append is removed for now. Wiring a real EcRelay here is a
-    // follow-up task for the IHV1 platform.
+    // hardcoded-mock service; it is now a relay-backed shim that needs
+    // a UART-backed `EcRelay` to construct. `ihv1-sp` has no UART
+    // driver wired in, so the (functionally no-op) Thermal append is
+    // removed for now. Wiring a real EcRelay here is a follow-up for
+    // the IHV1 platform.
     MessageHandler::new()
         .run_message_loop()
         .expect("Error in run_message_loop");

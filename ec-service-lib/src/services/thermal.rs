@@ -107,7 +107,7 @@ impl<R: Relay> Service for Thermal<'_, R> {
             | ThermalCommand::GetThrs
             | ThermalCommand::SetScp
             | ThermalCommand::GetVar
-            | ThermalCommand::SetVar => Err(FfaError::Other("thermal: command not yet relayed")),
+            | ThermalCommand::SetVar => Err(FfaError::Other("Thermal command not yet relayed")),
         }
     }
 }
