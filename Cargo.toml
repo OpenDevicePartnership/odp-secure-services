@@ -35,11 +35,11 @@ odp-ffa = { path = "odp-ffa" }
 hafnium = { path = "hafnium" }
 qemu-sp-uart = { path = "qemu-sp-uart" }
 
-mctp-rs = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", rev = "5cc395f101ad574214a49b2894c484cc19d41695", default-features = false, features = ["serial"] }
-embedded-services = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", rev = "5cc395f101ad574214a49b2894c484cc19d41695", default-features = false }
-battery-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", rev = "5cc395f101ad574214a49b2894c484cc19d41695", default-features = false }
-battery-service-interface = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", rev = "5cc395f101ad574214a49b2894c484cc19d41695", default-features = false }
-thermal-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", rev = "5cc395f101ad574214a49b2894c484cc19d41695", default-features = false }
+mctp-rs = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false, features = ["serial"] }
+embedded-services = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+battery-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+battery-service-interface = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
+thermal-service-relay = { git = "https://github.com/OpenDevicePartnership/embedded-services.git", branch = "main", default-features = false }
 embedded-io = { version = "0.7", default-features = false }
 log = { version = "0.4", default-features = false }
 mockall = "0.13.1"
