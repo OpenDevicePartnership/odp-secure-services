@@ -14,12 +14,17 @@ use odp_ffa::{DirectMessagePayload, Error as FfaError, HasRegisterPayload, MsgSe
 
 pub const THERMAL_SERVICE_ID: u8 = 0x09;
 
-pub const THERMAL_CMD_GET_TMP: u16 = 1;
-pub const THERMAL_CMD_SET_THRS: u16 = 2;
-pub const THERMAL_CMD_GET_THRS: u16 = 3;
-pub const THERMAL_CMD_SET_SCP: u16 = 4;
-pub const THERMAL_CMD_GET_VAR: u16 = 5;
-pub const THERMAL_CMD_SET_VAR: u16 = 6;
+/// Thermal command ids (FFA request byte 0 / ODP message id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
+#[repr(u16)]
+pub enum ThermalCommand {
+    GetTmp = 1,
+    SetThrs = 2,
+    GetThrs = 3,
+    SetScp = 4,
+    GetVar = 5,
+    SetVar = 6,
+}
 
 pub const GET_TMP_RESPONSE_BODY_LEN: usize = 4;
 
@@ -63,7 +68,7 @@ impl<'r, R: Relay> Thermal<'r, R> {
             .borrow_mut()
             .invoke_request(
                 THERMAL_SERVICE_ID,
-                THERMAL_CMD_GET_TMP,
+                ThermalCommand::GetTmp.into(),
                 &[instance_id],
                 GET_TMP_RESPONSE_BODY_LEN,
                 |payload| u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
@@ -78,9 +83,12 @@ impl<R: Relay> Service for Thermal<'_, R> {
 
     fn ffa_msg_send_direct_req2(&mut self, msg: MsgSendDirectReq2) -> Result<MsgSendDirectResp2> {
         let cmd = msg.payload().u8_at(0);
+        let Ok(command) = ThermalCommand::try_from(cmd as u16) else {
+            return Err(FfaError::Other("Unknown Thermal Command"));
+        };
 
-        match cmd as u16 {
-            THERMAL_CMD_GET_TMP => {
+        match command {
+            ThermalCommand::GetTmp => {
                 let instance_id = msg.payload().u8_at(1);
                 let rsp = match self.get_temperature(instance_id) {
                     Ok(dk) => TempRsp {
@@ -95,9 +103,11 @@ impl<R: Relay> Service for Thermal<'_, R> {
                 ))
             }
             // The other five commands are relayed in a follow-up.
-            THERMAL_CMD_SET_THRS | THERMAL_CMD_GET_THRS | THERMAL_CMD_SET_SCP | THERMAL_CMD_GET_VAR
-            | THERMAL_CMD_SET_VAR => Err(FfaError::Other("thermal: command not yet relayed")),
-            _ => Err(FfaError::Other("Unknown Thermal Command")),
+            ThermalCommand::SetThrs
+            | ThermalCommand::GetThrs
+            | ThermalCommand::SetScp
+            | ThermalCommand::GetVar
+            | ThermalCommand::SetVar => Err(FfaError::Other("thermal: command not yet relayed")),
         }
     }
 }
@@ -129,7 +139,7 @@ mod tests {
         .expect("ec-side serialize");
         assert_eq!(n, GET_TMP_RESPONSE_BODY_LEN, "GetTmp response body must be 4 bytes");
 
-        let response_header = ec_relay::build_odp_header(false, THERMAL_SERVICE_ID, THERMAL_CMD_GET_TMP);
+        let response_header = ec_relay::build_odp_header(false, THERMAL_SERVICE_ID, ThermalCommand::GetTmp.into());
         let framed_response = frame_response_packets(response_header, &response_payload);
 
         let mut transport = LoopbackTransport::new();
@@ -153,7 +163,7 @@ mod tests {
         let (is_req, svc_id, _is_err, msg_id) = ec_relay::parse_odp_header(&inner_tx[..4]).expect("parse header");
         assert!(is_req, "must be a request");
         assert_eq!(svc_id, THERMAL_SERVICE_ID);
-        assert_eq!(msg_id, THERMAL_CMD_GET_TMP);
+        assert_eq!(msg_id, u16::from(ThermalCommand::GetTmp));
         let decoded =
             ThermalRequest::deserialize(msg_id, &inner_tx[4..]).expect("ec-side decoder must accept SP-produced bytes");
         assert!(
