@@ -36,7 +36,7 @@ use core::cell::RefCell;
 
 use uuid::{uuid, Uuid};
 
-use crate::services::ec_relay::{self, EcRelayError, Relay};
+use crate::services::ec_relay::{EcRelayError, Relay};
 use crate::{Result, Service};
 use odp_ffa::{DirectMessagePayload, Error as FfaError, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
 
@@ -107,21 +107,15 @@ impl<'r, R: Relay> Thermal<'r, R> {
     /// MCTP relay. Returns the raw `u32 DeciKelvin` or a relay /
     /// wire-format error.
     pub fn get_temperature(&self, instance_id: u8) -> core::result::Result<u32, ThermalError> {
-        let request_header = ec_relay::build_odp_header(true, THERMAL_SERVICE_ID, THERMAL_CMD_GET_TMP);
-        let request_body = [instance_id];
-
         self.relay
             .borrow_mut()
-            .invoke(request_header, &request_body, |response| {
-                if response.service_id != THERMAL_SERVICE_ID || response.message_id != THERMAL_CMD_GET_TMP {
-                    return Err(EcRelayError::UnexpectedOdpService);
-                }
-                if response.body.len() < GET_TMP_RESPONSE_BODY_LEN {
-                    return Err(EcRelayError::BodyTooShort);
-                }
-                let payload = &response.body[..GET_TMP_RESPONSE_BODY_LEN];
-                Ok(u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]))
-            })
+            .invoke_request(
+                THERMAL_SERVICE_ID,
+                THERMAL_CMD_GET_TMP,
+                &[instance_id],
+                GET_TMP_RESPONSE_BODY_LEN,
+                |payload| u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+            )
             .map_err(ThermalError::Relay)
     }
 }
@@ -176,26 +170,10 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::ec_relay::test_util::{frame_response_packets, LoopbackTransport, TimeoutUart};
-    use crate::services::ec_relay::{EcRelay, MctpSerialTransport};
+    use crate::services::ec_relay::test_util::{frame_response_packets, strip_mctp_framing, LoopbackTransport, TimeoutUart};
+    use crate::services::ec_relay::{self, EcRelay, MctpSerialTransport};
     use embedded_services::relay::SerializableMessage;
     use thermal_service_relay::{DeciKelvin, ThermalRequest, ThermalResponse};
-
-    /// Strip MCTP serial framing from the bytes Thermal emitted on TX.
-    /// Returns the inner body (post the MCTP-message-type byte): 4 bytes
-    /// of OdpHeader + N bytes of serialized payload. Verbatim copy of
-    /// `battery.rs::tests::strip_mctp_framing`.
-    fn strip_mctp_framing(framed: &[u8]) -> std::vec::Vec<u8> {
-        use mctp_rs::{MctpPacketContext, MctpSerialMedium};
-        let mut buf = [0u8; 256];
-        let mut ctx = MctpPacketContext::<MctpSerialMedium>::new(MctpSerialMedium, &mut buf);
-        let message = ctx
-            .deserialize_packet(framed)
-            .expect("deserialize_packet ok")
-            .expect("complete message");
-        assert_eq!(message.message_buffer.message_type(), ec_relay::ODP_MESSAGE_TYPE);
-        message.message_buffer.body().to_vec()
-    }
 
     #[test]
     fn produces_canonical_get_tmp_request_bytes() {

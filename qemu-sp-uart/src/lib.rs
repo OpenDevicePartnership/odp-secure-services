@@ -13,11 +13,11 @@
 //! # Base address contract
 //!
 //! [`Pl011Uart::new`] takes the MMIO `base` as a constructor parameter; the
-//! literal device address (`0x60030000` for the SP-side `ec_uart`) is NOT
+//! literal device address (`0x09040000` for the SP-side `ec_uart`) is NOT
 //! hard-coded inside this crate. The address is declared in the outer
 //! platform repo's SP DTS (`odp-platform-qemu-sbsa` →
 //! `mod/secure-services/platform/linker/qemu-ec-sp.dts`). The platform
-//! binary wires `Pl011Uart::new(0x60030000)` from `qemu-ec-sp::main`.
+//! binary wires `Pl011Uart::new(0x09040000)` from `qemu-ec-sp::main`.
 //!
 //! # Safety contract
 //!

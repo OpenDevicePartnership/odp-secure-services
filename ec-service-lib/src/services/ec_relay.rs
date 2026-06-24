@@ -286,6 +286,36 @@ pub trait Relay {
     ) -> Result<R, EcRelayError>
     where
         F: FnOnce(OdpResponse<'_>) -> Result<R, EcRelayError>;
+
+    /// Issue a request to `service_id`/`message_id` and validate the
+    /// response envelope before parsing: the response must echo the same
+    /// service + message id and carry at least `min_body_len` bytes. The
+    /// parser receives a validated slice of exactly `min_body_len` bytes
+    /// and never re-checks the envelope or length. Collapses the
+    /// build-header → invoke → validate boilerplate every relay-backed
+    /// FFA service repeats per command.
+    fn invoke_request<R, F>(
+        &mut self,
+        service_id: u8,
+        message_id: u16,
+        request_body: &[u8],
+        min_body_len: usize,
+        parse_body: F,
+    ) -> Result<R, EcRelayError>
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        let request_header = build_odp_header(true, service_id, message_id);
+        self.invoke(request_header, request_body, |response| {
+            if response.service_id != service_id || response.message_id != message_id {
+                return Err(EcRelayError::UnexpectedOdpService);
+            }
+            if response.body.len() < min_body_len {
+                return Err(EcRelayError::BodyTooShort);
+            }
+            Ok(parse_body(&response.body[..min_body_len]))
+        })
+    }
 }
 
 /// Owning relay handle to the EC firmware over an `OdpTransport`. Owns
@@ -465,6 +495,22 @@ pub(crate) mod test_util {
         pub fn prime_rx<I: IntoIterator<Item = u8>>(&mut self, bytes: I) {
             self.rx.extend(bytes);
         }
+    }
+
+    /// Strip MCTP serial framing from the bytes a service emitted on TX.
+    /// Returns the inner body (post the MCTP message-type byte): the
+    /// 4-byte ODP header followed by the serialized payload. Shared by
+    /// the per-service wire-format gate tests.
+    pub fn strip_mctp_framing(framed: &[u8]) -> Vec<u8> {
+        use mctp_rs::{MctpPacketContext, MctpSerialMedium};
+        let mut buf = [0u8; 256];
+        let mut ctx = MctpPacketContext::<MctpSerialMedium>::new(MctpSerialMedium, &mut buf);
+        let message = ctx
+            .deserialize_packet(framed)
+            .expect("deserialize_packet ok")
+            .expect("complete message");
+        assert_eq!(message.message_buffer.message_type(), ODP_MESSAGE_TYPE);
+        message.message_buffer.body().to_vec()
     }
 
     impl OdpTransport for LoopbackTransport {
