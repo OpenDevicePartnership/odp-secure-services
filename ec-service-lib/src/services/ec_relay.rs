@@ -523,8 +523,11 @@ pub(crate) mod test_util {
     }
 
     impl embedded_io::Write for TimeoutUart {
-        fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-            Ok(0)
+        fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            // Swallow writes so callers exercising the full `invoke()`
+            // round-trip can reach the RX-side timeout path. Without
+            // this, `embedded_io::write_all` panics on `Ok(0)`.
+            Ok(buf.len())
         }
         fn flush(&mut self) -> Result<(), Self::Error> {
             Ok(())

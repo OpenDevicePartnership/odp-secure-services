@@ -34,6 +34,7 @@ aarch64-cpu.workspace = true
 embedded-services.workspace = true
 battery-service-relay.workspace = true
 battery-service-interface.workspace = true
+thermal-service-relay.workspace = true
 
 [features]
 default = []
