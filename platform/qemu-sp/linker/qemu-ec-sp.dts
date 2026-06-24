@@ -90,14 +90,15 @@
 			attributes = <0x3>;
 		};
 
-		/* EC uart */
-		/*
+		/* EC uart — secure PL011 exposed by QEMU virt,secure=on @ 0x09040000.
+		 * Mapped into the SP so Pl011Uart::new(0x09040000) in main.rs can
+		 * drive the EC transport.
+		 */
 		ec_uart {
 			description = "ec uart";
 			base-address = <0x0 0x09040000>;
 			pages-count = <0x1>;
 			attributes = <0x3>;
 		};
-		*/
 	};
 };
