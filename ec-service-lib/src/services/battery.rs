@@ -40,7 +40,7 @@ use core::cell::RefCell;
 
 use uuid::{uuid, Uuid};
 
-use crate::services::ec_relay::{EcRelayError, Relay};
+use crate::services::ec_relay::{take_array, EcRelayError, Relay};
 use crate::{Result, Service};
 use odp_ffa::{Error as FfaError, MsgSendDirectReq2, MsgSendDirectResp2};
 
@@ -52,9 +52,6 @@ pub const BATTERY_SERVICE_ID: u8 = 0x08;
 /// `BatteryCmd::GetBst` discriminant from
 /// `embedded-services/battery-service-relay/src/serialization.rs`.
 pub const BATTERY_CMD_GET_BST: u16 = 2;
-
-/// Body of a `GetBst` response, post-OdpHeader. 16 bytes (4 LE u32 dwords).
-pub const GET_BST_RESPONSE_BODY_LEN: usize = 16;
 
 /// Parsed `GetBst` response (mirrors
 /// `battery_service_interface::BstReturn` field-for-field but stays
@@ -112,18 +109,18 @@ impl<'r, R: Relay> Battery<'r, R> {
     pub fn get_bst(&self, battery_id: u8) -> core::result::Result<BstReturnRaw, BatteryError> {
         self.relay
             .borrow_mut()
-            .invoke_request(
-                BATTERY_SERVICE_ID,
-                BATTERY_CMD_GET_BST,
-                &[battery_id],
-                GET_BST_RESPONSE_BODY_LEN,
-                |payload| BstReturnRaw {
-                    battery_state: u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
-                    battery_present_rate: u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
-                    battery_remaining_capacity: u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]),
-                    battery_present_voltage: u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]),
-                },
-            )
+            .invoke_request(BATTERY_SERVICE_ID, BATTERY_CMD_GET_BST, &[battery_id], |body| {
+                let (state, body) = take_array(body)?;
+                let (rate, body) = take_array(body)?;
+                let (capacity, body) = take_array(body)?;
+                let (voltage, _) = take_array(body)?;
+                Ok(BstReturnRaw {
+                    battery_state: u32::from_le_bytes(state),
+                    battery_present_rate: u32::from_le_bytes(rate),
+                    battery_remaining_capacity: u32::from_le_bytes(capacity),
+                    battery_present_voltage: u32::from_le_bytes(voltage),
+                })
+            })
             .map_err(BatteryError::Relay)
     }
 }
