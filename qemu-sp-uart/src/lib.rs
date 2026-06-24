@@ -5,10 +5,9 @@
 //! Minimal blocking PL011 MMIO driver for the QEMU SBSA secure partition.
 //!
 //! Polled TX (blocks while `UARTFR.TXFF` is set) and bounded polled RX
-//! (busy-wait up to [`Pl011Uart::RX_POLL_BUDGET`] iterations, via
-//! [`Pl011Uart::read_byte_blocking`] / [`Pl011Uart::read_byte_bounded`]).
-//! MMIO is fronted by the [`Mmio`] trait so the bit-twiddling is
-//! host-testable with a mock backend.
+//! (via [`Pl011Uart::read_byte_blocking`]). MMIO is fronted by the
+//! [`Mmio`] trait so the bit-twiddling is host-testable with a mock
+//! backend.
 //!
 //! # Base address contract
 //!
@@ -92,11 +91,7 @@ pub const FR_TXFF: u32 = 1 << 5; // TX FIFO full
 /// PL011 driver errors.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// RX poll budget exhausted with `UARTFR.RXFE` still set — the EC
-    /// never produced a byte within the bounded busy-spin window.
-    /// Produced by [`Pl011Uart::read_byte_bounded`] and (via the
-    /// default budget) [`Pl011Uart::read_byte_blocking`]. Surfaces as
-    /// `EcRelayError::TransportReadTimeout` upstream.
+    /// RX poll budget exhausted before a byte arrived.
     Timeout,
 }
 
@@ -156,21 +151,15 @@ impl<M: Mmio> Pl011Uart<M> {
         Ok(())
     }
 
-    /// Default RX-poll budget for `read_byte_blocking`. Sized to be
-    /// effectively infinite for the EC's millisecond-scale responses
-    /// while bounding a stuck link to a finite busy-spin (~seconds
-    /// wall-clock at PL011 polling rate). Surfaced via
-    /// `EcRelayError::TransportReadTimeout` upstream.
+    /// Default RX-poll budget for `read_byte_blocking`: ample for the
+    /// EC's ms-scale responses, finite so a stuck link can't hang.
     pub const RX_POLL_BUDGET: u32 = 10_000_000;
 
-    /// Bounded blocking read of one byte. Polls `UARTFR.RXFE` up to
-    /// `budget` times. Returns `Err(Error::Timeout)` if the budget
-    /// is exhausted with RXFE still set.
+    /// Read one byte, polling `UARTFR.RXFE` up to `budget` times;
+    /// `Err(Error::Timeout)` if exhausted.
     pub fn read_byte_bounded(&mut self, budget: u32) -> Result<u8, Error> {
         for _ in 0..budget {
-            // SAFETY: `UARTFR` / `UARTDR` are in the device region
-            // passed to `RawMmio::new` (or the mock backend's tracked
-            // offsets in tests).
+            // SAFETY: see `write_bytes`.
             let fr = unsafe { self.mmio.read32(UARTFR) };
             if fr & FR_RXFE == 0 {
                 // SAFETY: RXFE clear ⇒ at least one byte in the RX FIFO.
@@ -182,7 +171,6 @@ impl<M: Mmio> Pl011Uart<M> {
     }
 
     /// Blocking read of one byte, bounded by [`Self::RX_POLL_BUDGET`].
-    /// Returns `Err(Error::Timeout)` if the EC never responds.
     pub fn read_byte_blocking(&mut self) -> Result<u8, Error> {
         self.read_byte_bounded(Self::RX_POLL_BUDGET)
     }

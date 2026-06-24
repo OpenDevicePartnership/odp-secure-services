@@ -1,36 +1,8 @@
-//! `Thermal` — FFA service that proxies Normal-World Thermal requests
-//! to the EC's `ThermalServiceRelayHandler` over MCTP.
+//! `Thermal` — FFA service that relays Normal-World Thermal requests to
+//! the EC over MCTP. Mirrors [`crate::services::battery::Battery`].
 //!
-//! Mirrors [`crate::services::battery::Battery`] exactly — see that file
-//! for the canonical pattern (generic `<'r, R: Relay>` shape,
-//! `&RefCell<R>` sharing of a single physical EC channel, manual
-//! SP-side serialization rationale, and the wire-format gate test).
-//!
-//! # Wire format (must match the EC's `OdpRelayHandler` byte-for-byte)
-//!
-//! Thermal service id = `0x09`; command discriminants follow
-//! `embedded-services/thermal-service-relay/src/serialization.rs::ThermalCmd`
-//! (`GetTmp = 1`, `SetThrs = 2`, `GetThrs = 3`, `SetScp = 4`,
-//! `GetVar = 5`, `SetVar = 6`).
-//!
-//! T2 (this commit) relays `GetTmp` only:
-//!
-//! Request body (post OdpHeader): `[instance_id: u8]` (1 byte).
-//! Response body (post OdpHeader): `[temperature: u32 LE DeciKelvin]` (4 bytes).
-//!
-//! The other five commands return `odp_ffa::Error::Other(..)` for now;
-//! T3 wires them on top of this shape.
-//!
-//! # SP-side runtime serialization is manual
-//!
-//! `embedded_services::relay::SerializableMessage` does not compile for
-//! `aarch64-unknown-none-softfloat` (the SBSA SP target) because
-//! `embassy-sync::ThreadModeRawMutex` is `cortex_m`-gated. As a
-//! workaround, SP-side runtime serialization is performed MANUALLY
-//! (1-byte request payload; 4 LE bytes for the GetTmp response). The
-//! wire-format gate test in the `tests` module below round-trips bytes
-//! through the EC's OWN `SerializableMessage` impl (via
-//! `[dev-dependencies]`) so any drift fails the build.
+//! Service id `0x09`; commands `GetTmp=1, SetThrs=2, GetThrs=3, SetScp=4,
+//! GetVar=5, SetVar=6`. Only `GetTmp` is relayed so far.
 
 use core::cell::RefCell;
 
@@ -40,14 +12,8 @@ use crate::services::ec_relay::{EcRelayError, Relay};
 use crate::{Result, Service};
 use odp_ffa::{DirectMessagePayload, Error as FfaError, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
 
-/// ODP service-id for Thermal (matches the EC `OdpRelayHandler`
-/// instantiation in `embedded-services::thermal-service-relay`).
 pub const THERMAL_SERVICE_ID: u8 = 0x09;
 
-/// `ThermalCmd` discriminants from
-/// `embedded-services/thermal-service-relay/src/serialization.rs`. The
-/// enum itself is private to the EC crate; we mirror the integer
-/// constants here.
 pub const THERMAL_CMD_GET_TMP: u16 = 1;
 pub const THERMAL_CMD_SET_THRS: u16 = 2;
 pub const THERMAL_CMD_GET_THRS: u16 = 3;
@@ -55,16 +21,11 @@ pub const THERMAL_CMD_SET_SCP: u16 = 4;
 pub const THERMAL_CMD_GET_VAR: u16 = 5;
 pub const THERMAL_CMD_SET_VAR: u16 = 6;
 
-/// Body of a `GetTmp` response, post-OdpHeader (4 LE bytes / one u32 DeciKelvin).
 pub const GET_TMP_RESPONSE_BODY_LEN: usize = 4;
 
-/// Errors returned by [`Thermal::get_temperature`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThermalError {
-    /// Relay (MCTP + transport) failure — see [`EcRelayError`].
     Relay(EcRelayError),
-    /// EC's response was not a Thermal service response or not the
-    /// expected message id.
     UnexpectedResponse,
 }
 
@@ -74,9 +35,7 @@ impl From<EcRelayError> for ThermalError {
     }
 }
 
-/// FFA reply for `GetTmp`. `temp` is `u32 DeciKelvin` zero-extended
-/// to `u64`. `status: -1` indicates relay failure (matches the
-/// existing in-SP mock's reply shape that Normal-World callers expect).
+/// FFA reply for `GetTmp` (`temp` = EC u32 DeciKelvin; `status: -1` on relay failure).
 #[derive(Default, Debug, Clone, Copy)]
 struct TempRsp {
     status: i64,
@@ -89,11 +48,6 @@ impl From<TempRsp> for DirectMessagePayload {
     }
 }
 
-/// `Thermal` holds a handle to a shared [`Relay`] — it owns no
-/// transport, no assembly buffer, no MCTP framing state. Construction
-/// takes only a borrow of the wiring-layer-owned `RefCell<R>`. Mirrors
-/// [`crate::services::battery::Battery`] field-for-field; see that
-/// type's doc-comment for the rationale of generic `R: Relay`.
 pub struct Thermal<'r, R: Relay> {
     relay: &'r RefCell<R>,
 }
@@ -103,9 +57,7 @@ impl<'r, R: Relay> Thermal<'r, R> {
         Self { relay }
     }
 
-    /// Drive a single GetTmp request/response round-trip over the EC
-    /// MCTP relay. Returns the raw `u32 DeciKelvin` or a relay /
-    /// wire-format error.
+    /// Relay a GetTmp round-trip; returns the EC's `u32` DeciKelvin.
     pub fn get_temperature(&self, instance_id: u8) -> core::result::Result<u32, ThermalError> {
         self.relay
             .borrow_mut()
@@ -142,27 +94,16 @@ impl<R: Relay> Service for Thermal<'_, R> {
                     DirectMessagePayload::from(rsp),
                 ))
             }
-            // T3 will relay these five commands to the EC. For now they
-            // surface as a structured FFA error so the dispatch match
-            // stays exhaustive and the in-SP mock behavior is gone.
-            THERMAL_CMD_SET_THRS
-            | THERMAL_CMD_GET_THRS
-            | THERMAL_CMD_SET_SCP
-            | THERMAL_CMD_GET_VAR
+            // The other five commands are relayed in a follow-up.
+            THERMAL_CMD_SET_THRS | THERMAL_CMD_GET_THRS | THERMAL_CMD_SET_SCP | THERMAL_CMD_GET_VAR
             | THERMAL_CMD_SET_VAR => Err(FfaError::Other("thermal: command not yet relayed")),
             _ => Err(FfaError::Other("Unknown Thermal Command")),
         }
     }
 }
 
-// ===========================================================================
-// Wire-format compatibility gate
-//
-// Round-trips bytes through the EC's OWN `SerializableMessage::serialize` /
-// `deserialize` impls from `embedded-services/thermal-service-relay`. Any
-// drift in field order, endianness, or discriminant numbering causes the
-// assertion to fail. Runs on host (std available) — no QEMU.
-// ===========================================================================
+// Wire-format gate: round-trips bytes through the EC's own serializer so
+// any drift fails the build.
 
 #[cfg(test)]
 extern crate std;
@@ -170,15 +111,16 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::ec_relay::test_util::{frame_response_packets, strip_mctp_framing, LoopbackTransport, TimeoutUart};
+    use crate::services::ec_relay::test_util::{
+        frame_response_packets, strip_mctp_framing, LoopbackTransport, TimeoutUart,
+    };
     use crate::services::ec_relay::{self, EcRelay, MctpSerialTransport};
     use embedded_services::relay::SerializableMessage;
     use thermal_service_relay::{DeciKelvin, ThermalRequest, ThermalResponse};
 
     #[test]
     fn produces_canonical_get_tmp_request_bytes() {
-        // -- Synthesize a canonical EC response: GetTmp body = u32 LE
-        //    DeciKelvin. 2982 dK ≈ 25.05 °C.
+        // EC GetTmp response: 2982 dK ≈ 25 °C.
         let mut response_payload = [0u8; GET_TMP_RESPONSE_BODY_LEN];
         let n = ThermalResponse::ThermalGetTmpResponse {
             temperature: DeciKelvin(2982),
@@ -190,20 +132,15 @@ mod tests {
         let response_header = ec_relay::build_odp_header(false, THERMAL_SERVICE_ID, THERMAL_CMD_GET_TMP);
         let framed_response = frame_response_packets(response_header, &response_payload);
 
-        // -- Construct the shared EcRelay (wrapping a loopback transport)
-        //    and hand a borrow to the Thermal service.
         let mut transport = LoopbackTransport::new();
         transport.prime_rx(framed_response.iter().copied());
         let relay = RefCell::new(EcRelay::new(transport));
         let svc = Thermal::new(&relay);
 
-        // -- Drive the round-trip.
         let dk = svc.get_temperature(0x07).expect("relay GetTmp");
         assert_eq!(dk, 2982);
 
-        // -- ASSERT 1 (request side, byte-level):
-        //    Thermal's TX bytes (MCTP-framed) decode back to exactly:
-        //      OdpHeader [0x02, 0x09, 0x00, 0x01]  +  payload [0x07]
+        // Request bytes: OdpHeader [0x02, 0x09, 0x00, 0x01] + payload [0x07].
         let tx_bytes = relay.borrow().transport().tx.clone();
         let inner_tx = strip_mctp_framing(&tx_bytes);
         assert_eq!(
@@ -212,17 +149,13 @@ mod tests {
             "Thermal GetTmp request wire bytes must match the EC's expected encoding exactly"
         );
 
-        // -- ASSERT 2 (round-trip via the EC's OWN deserializer):
-        //    The bytes Thermal produced parse back to
-        //    GetTmpRequest { instance_id: 0x07 } via
-        //    `ThermalRequest::deserialize`.
-        let (is_req, svc_id, _is_err, msg_id) =
-            ec_relay::parse_odp_header(&inner_tx[..4]).expect("parse header");
+        // The SP-produced bytes parse back via the EC's own deserializer.
+        let (is_req, svc_id, _is_err, msg_id) = ec_relay::parse_odp_header(&inner_tx[..4]).expect("parse header");
         assert!(is_req, "must be a request");
         assert_eq!(svc_id, THERMAL_SERVICE_ID);
         assert_eq!(msg_id, THERMAL_CMD_GET_TMP);
-        let decoded = ThermalRequest::deserialize(msg_id, &inner_tx[4..])
-            .expect("ec-side decoder must accept SP-produced bytes");
+        let decoded =
+            ThermalRequest::deserialize(msg_id, &inner_tx[4..]).expect("ec-side decoder must accept SP-produced bytes");
         assert!(
             matches!(decoded, ThermalRequest::ThermalGetTmpRequest { instance_id: 0x07 }),
             "EC-side decoder must reconstruct the original request variant"

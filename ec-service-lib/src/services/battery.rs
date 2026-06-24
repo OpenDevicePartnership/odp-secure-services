@@ -244,5 +244,4 @@ mod tests {
         assert_eq!(result.battery_remaining_capacity, bst.battery_remaining_capacity);
         assert_eq!(result.battery_present_voltage, bst.battery_present_voltage);
     }
-
 }

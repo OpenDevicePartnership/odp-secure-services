@@ -151,10 +151,8 @@ pub enum EcRelayError {
     TransportWrite,
     /// Transport-layer read failure (UART RX timeout, etc.).
     TransportRead,
-    /// Transport-layer read budget exhausted (EC did not produce a
-    /// framed response within the bounded poll budget). Distinct
-    /// from `TransportRead` so callers can surface a deterministic
-    /// FFA reply (e.g. `status: -1`) rather than retrying.
+    /// Read budget exhausted before a framed response arrived. Distinct
+    /// from `TransportRead` so callers can fail deterministically.
     TransportReadTimeout,
     /// `MctpPacketContext::serialize_packet` failed.
     MctpSerialize(&'static str),
@@ -287,13 +285,9 @@ pub trait Relay {
     where
         F: FnOnce(OdpResponse<'_>) -> Result<R, EcRelayError>;
 
-    /// Issue a request to `service_id`/`message_id` and validate the
-    /// response envelope before parsing: the response must echo the same
-    /// service + message id and carry at least `min_body_len` bytes. The
-    /// parser receives a validated slice of exactly `min_body_len` bytes
-    /// and never re-checks the envelope or length. Collapses the
-    /// build-header → invoke → validate boilerplate every relay-backed
-    /// FFA service repeats per command.
+    /// Build the request header, invoke, and validate the response
+    /// envelope (same service + message id, at least `min_body_len`
+    /// bytes) before handing the parser a `min_body_len`-byte slice.
     fn invoke_request<R, F>(
         &mut self,
         service_id: u8,
@@ -497,10 +491,7 @@ pub(crate) mod test_util {
         }
     }
 
-    /// Strip MCTP serial framing from the bytes a service emitted on TX.
-    /// Returns the inner body (post the MCTP message-type byte): the
-    /// 4-byte ODP header followed by the serialized payload. Shared by
-    /// the per-service wire-format gate tests.
+    /// Strip MCTP framing; returns the inner body (ODP header + payload).
     pub fn strip_mctp_framing(framed: &[u8]) -> Vec<u8> {
         use mctp_rs::{MctpPacketContext, MctpSerialMedium};
         let mut buf = [0u8; 256];
@@ -536,9 +527,7 @@ pub(crate) mod test_util {
         }
     }
 
-    /// Test-only UART that always reports a timed-out read. Used to
-    /// exercise the `MctpSerialTransport::recv_framed_packet`
-    /// error-mapping path.
+    /// Test UART that always reports a timed-out read.
     pub struct TimeoutUart;
 
     impl embedded_io::ErrorType for TimeoutUart {
@@ -570,9 +559,8 @@ pub(crate) mod test_util {
 
     impl embedded_io::Write for TimeoutUart {
         fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-            // Swallow writes so callers exercising the full `invoke()`
-            // round-trip can reach the RX-side timeout path. Without
-            // this, `embedded_io::write_all` panics on `Ok(0)`.
+            // Swallow writes so tests reach the RX timeout path
+            // (`write_all` panics on `Ok(0)`).
             Ok(buf.len())
         }
         fn flush(&mut self) -> Result<(), Self::Error> {
@@ -632,9 +620,7 @@ mod tests {
         use test_util::TimeoutUart;
         let mut t = MctpSerialTransport::new(TimeoutUart);
         let mut buf = [0u8; 64];
-        let err = t
-            .recv_framed_packet(&mut buf)
-            .expect_err("timeout should surface");
+        let err = t.recv_framed_packet(&mut buf).expect_err("timeout should surface");
         assert_eq!(err, EcRelayError::TransportReadTimeout);
     }
 }
