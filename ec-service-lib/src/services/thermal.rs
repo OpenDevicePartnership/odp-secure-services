@@ -8,7 +8,7 @@ use core::cell::RefCell;
 
 use uuid::{uuid, Uuid};
 
-use crate::services::ec_relay::{EcRelayError, Relay};
+use crate::services::ec_relay::{take_array, EcRelayError, Relay};
 use crate::{Result, Service};
 use odp_ffa::{DirectMessagePayload, Error as FfaError, HasRegisterPayload, MsgSendDirectReq2, MsgSendDirectResp2};
 
@@ -25,8 +25,6 @@ pub enum ThermalCommand {
     GetVar = 5,
     SetVar = 6,
 }
-
-pub const GET_TMP_RESPONSE_BODY_LEN: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThermalError {
@@ -70,8 +68,10 @@ impl<'r, R: Relay> Thermal<'r, R> {
                 THERMAL_SERVICE_ID,
                 ThermalCommand::GetTmp.into(),
                 &[instance_id],
-                GET_TMP_RESPONSE_BODY_LEN,
-                |payload| u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+                |body| {
+                    let (temp, _) = take_array(body)?;
+                    Ok(u32::from_le_bytes(temp))
+                },
             )
             .map_err(ThermalError::Relay)
     }
@@ -128,6 +128,8 @@ mod tests {
     use embedded_services::relay::SerializableMessage;
     use thermal_service_relay::{DeciKelvin, ThermalRequest, ThermalResponse};
 
+    const GET_TMP_RESPONSE_BODY_LEN: usize = 4;
+
     #[test]
     fn produces_canonical_get_tmp_request_bytes() {
         // EC GetTmp response: 2982 dK ≈ 25 °C.
@@ -179,5 +181,20 @@ mod tests {
         let svc = Thermal::new(&relay);
         let err = svc.get_temperature(0).expect_err("timeout should propagate");
         assert_eq!(err, ThermalError::Relay(EcRelayError::TransportReadTimeout));
+    }
+
+    #[test]
+    fn get_temperature_rejects_short_response_body() {
+        // EC replies with a valid GetTmp header but a 2-byte payload (< 4).
+        let response_header = ec_relay::build_odp_header(false, THERMAL_SERVICE_ID, ThermalCommand::GetTmp.into());
+        let framed = frame_response_packets(response_header, &[0xAA, 0xBB]);
+        let mut transport = LoopbackTransport::new();
+        transport.prime_rx(framed.iter().copied());
+        let relay = RefCell::new(EcRelay::new(transport));
+        let svc = Thermal::new(&relay);
+        assert_eq!(
+            svc.get_temperature(0x07),
+            Err(ThermalError::Relay(EcRelayError::BodyTooShort))
+        );
     }
 }

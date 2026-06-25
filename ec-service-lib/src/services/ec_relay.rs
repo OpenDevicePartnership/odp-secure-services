@@ -87,6 +87,16 @@ pub fn parse_odp_header(bytes: &[u8]) -> Result<(bool, u8, bool, u16), &'static 
     Ok((is_request, service_id, is_error, message_id))
 }
 
+/// Split the first `N` bytes off `body` as an owned array, returning the
+/// remaining bytes for chained reads, or [`EcRelayError::BodyTooShort`].
+/// `N` is inferred from the caller (e.g. `u32::from_le_bytes` fixes it at
+/// 4), so a command's response length stays derived from its parse rather
+/// than a separate constant that can drift.
+pub fn take_array<const N: usize>(body: &[u8]) -> Result<([u8; N], &[u8]), EcRelayError> {
+    let (head, rest) = body.split_first_chunk::<N>().ok_or(EcRelayError::BodyTooShort)?;
+    Ok((*head, rest))
+}
+
 // ===========================================================================
 // MctpMessageTrait shims so `MctpPacketContext::serialize_packet` accepts
 // our raw header + body bytes (no full SerializableMessage impl needed).
@@ -286,28 +296,25 @@ pub trait Relay {
         F: FnOnce(OdpResponse<'_>) -> Result<R, EcRelayError>;
 
     /// Build the request header, invoke, and validate the response
-    /// envelope (same service + message id, at least `min_body_len`
-    /// bytes) before handing the parser a `min_body_len`-byte slice.
+    /// envelope (same service + message id) before handing the body to
+    /// `parse_body`, which validates its own length/shape and returns an
+    /// `EcRelayError` on a mismatch.
     fn invoke_request<R, F>(
         &mut self,
         service_id: u8,
         message_id: u16,
         request_body: &[u8],
-        min_body_len: usize,
         parse_body: F,
     ) -> Result<R, EcRelayError>
     where
-        F: FnOnce(&[u8]) -> R,
+        F: FnOnce(&[u8]) -> Result<R, EcRelayError>,
     {
         let request_header = build_odp_header(true, service_id, message_id);
         self.invoke(request_header, request_body, |response| {
             if response.service_id != service_id || response.message_id != message_id {
                 return Err(EcRelayError::UnexpectedOdpService);
             }
-            if response.body.len() < min_body_len {
-                return Err(EcRelayError::BodyTooShort);
-            }
-            Ok(parse_body(&response.body[..min_body_len]))
+            parse_body(response.body)
         })
     }
 }
