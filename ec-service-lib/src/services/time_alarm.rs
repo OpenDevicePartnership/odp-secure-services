@@ -18,9 +18,12 @@ const INVALID_TIMESTAMP: [u8; ACPI_TIMESTAMP_LEN] = [0u8; ACPI_TIMESTAMP_LEN];
 pub enum TimeAlarmCommand {
     GetCapabilities = 1,
     GetRealTime = 2,
+    SetRealTime = 3,
     GetWakeStatus = 4,
+    ClearWakeStatus = 5,
     SetTimerValue = 6,
     GetTimerValue = 7,
+    SetExpiredTimerPolicy = 8,
     GetExpiredTimerPolicy = 9,
 }
 
@@ -36,7 +39,19 @@ enum TimeAlarmResponseDiscriminant {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
+struct SetRealTimeRequest {
+    timestamp: [u8; ACPI_TIMESTAMP_LEN],
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
 struct GetWakeStatusRequest {
+    timer_id: U32,
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct ClearWakeStatusRequest {
     timer_id: U32,
 }
 
@@ -51,6 +66,13 @@ struct SetTimerValueRequest {
 #[repr(C)]
 struct GetTimerValueRequest {
     timer_id: U32,
+}
+
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct SetExpiredTimerPolicyRequest {
+    timer_id: U32,
+    policy: U32,
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
@@ -122,6 +144,19 @@ impl<'r, R: Relay> TimeAlarm<'r, R> {
             .map_err(TimeAlarmError::Relay)
     }
 
+    fn set_real_time(&self, request: &SetRealTimeRequest) -> core::result::Result<(), TimeAlarmError> {
+        self.relay
+            .borrow_mut()
+            .invoke_request_with_response_id(
+                TIME_ALARM_SERVICE_ID,
+                TimeAlarmCommand::SetRealTime.into(),
+                TimeAlarmResponseDiscriminant::OkNoData.into(),
+                request.as_bytes(),
+                parse_empty_response,
+            )
+            .map_err(TimeAlarmError::Relay)
+    }
+
     fn get_wake_status(&self, request: &GetWakeStatusRequest) -> core::result::Result<u32, TimeAlarmError> {
         self.relay
             .borrow_mut()
@@ -131,6 +166,19 @@ impl<'r, R: Relay> TimeAlarm<'r, R> {
                 TimeAlarmResponseDiscriminant::TimerStatus.into(),
                 request.as_bytes(),
                 |body| take_exact_array::<4>(body).map(u32::from_le_bytes),
+            )
+            .map_err(TimeAlarmError::Relay)
+    }
+
+    fn clear_wake_status(&self, request: &ClearWakeStatusRequest) -> core::result::Result<(), TimeAlarmError> {
+        self.relay
+            .borrow_mut()
+            .invoke_request_with_response_id(
+                TIME_ALARM_SERVICE_ID,
+                TimeAlarmCommand::ClearWakeStatus.into(),
+                TimeAlarmResponseDiscriminant::OkNoData.into(),
+                request.as_bytes(),
+                parse_empty_response,
             )
             .map_err(TimeAlarmError::Relay)
     }
@@ -160,6 +208,22 @@ impl<'r, R: Relay> TimeAlarm<'r, R> {
                     let seconds = take_exact_array::<4>(body)?;
                     Ok(u32::from_le_bytes(seconds))
                 },
+            )
+            .map_err(TimeAlarmError::Relay)
+    }
+
+    fn set_expired_timer_policy(
+        &self,
+        request: &SetExpiredTimerPolicyRequest,
+    ) -> core::result::Result<(), TimeAlarmError> {
+        self.relay
+            .borrow_mut()
+            .invoke_request_with_response_id(
+                TIME_ALARM_SERVICE_ID,
+                TimeAlarmCommand::SetExpiredTimerPolicy.into(),
+                TimeAlarmResponseDiscriminant::OkNoData.into(),
+                request.as_bytes(),
+                parse_empty_response,
             )
             .map_err(TimeAlarmError::Relay)
     }
@@ -201,11 +265,23 @@ impl<R: Relay> Service for TimeAlarm<'_, R> {
                     DirectMessagePayload::from_iter(timestamp),
                 ))
             }
+            TimeAlarmCommand::SetRealTime => {
+                let status = parse_ffa_request::<SetRealTimeRequest>(msg.payload())
+                    .map(|request| setter_status(self.set_real_time(request)))
+                    .unwrap_or(LOCAL_ERROR_SENTINEL);
+                Ok(MsgSendDirectResp2::from_req_with_payload(&msg, scalar_payload(status)))
+            }
             TimeAlarmCommand::GetWakeStatus => {
                 let value = parse_ffa_request::<GetWakeStatusRequest>(msg.payload())
                     .map(|request| self.get_wake_status(request).unwrap_or(LOCAL_ERROR_SENTINEL))
                     .unwrap_or(LOCAL_ERROR_SENTINEL);
                 Ok(MsgSendDirectResp2::from_req_with_payload(&msg, scalar_payload(value)))
+            }
+            TimeAlarmCommand::ClearWakeStatus => {
+                let status = parse_ffa_request::<ClearWakeStatusRequest>(msg.payload())
+                    .map(|request| setter_status(self.clear_wake_status(request)))
+                    .unwrap_or(LOCAL_ERROR_SENTINEL);
+                Ok(MsgSendDirectResp2::from_req_with_payload(&msg, scalar_payload(status)))
             }
             TimeAlarmCommand::SetTimerValue => {
                 let status = parse_ffa_request::<SetTimerValueRequest>(msg.payload())
@@ -218,6 +294,12 @@ impl<R: Relay> Service for TimeAlarm<'_, R> {
                     .map(|request| self.get_timer_value(request).unwrap_or(LOCAL_ERROR_SENTINEL))
                     .unwrap_or(LOCAL_ERROR_SENTINEL);
                 Ok(MsgSendDirectResp2::from_req_with_payload(&msg, scalar_payload(value)))
+            }
+            TimeAlarmCommand::SetExpiredTimerPolicy => {
+                let status = parse_ffa_request::<SetExpiredTimerPolicyRequest>(msg.payload())
+                    .map(|request| setter_status(self.set_expired_timer_policy(request)))
+                    .unwrap_or(LOCAL_ERROR_SENTINEL);
+                Ok(MsgSendDirectResp2::from_req_with_payload(&msg, scalar_payload(status)))
             }
             TimeAlarmCommand::GetExpiredTimerPolicy => {
                 let value = parse_ffa_request::<GetExpiredTimerPolicyRequest>(msg.payload())
@@ -311,6 +393,85 @@ mod tests {
             .expect("known command returns DIRECT_RESP2")
             .payload()
             .u32_at(0)
+    }
+
+    fn successful_setter_request(command: u8, args: &[u8]) -> AcpiTimeAlarmRequest {
+        let (header, body) = serialized_response::<0>(AcpiTimeAlarmResponse::OkNoData);
+        assert_eq!(header, [0x00, 0x0B, 0x00, 0x06]);
+        let relay = relay_with_response(header, &body);
+        let response = TimeAlarm::new(&relay)
+            .ffa_msg_send_direct_req2(make_ffa_request(command, args))
+            .expect("setter returns DIRECT_RESP2");
+        assert_eq!(response.payload().u32_at(0), 0);
+
+        let inner = transmitted_inner(&relay);
+        assert_eq!(&inner[..4], &[0x02, 0x0B, 0x00, command]);
+        assert_eq!(&inner[4..], args);
+        AcpiTimeAlarmRequest::deserialize(u16::from(command), &inner[4..]).expect("EC decoder accepts setter")
+    }
+
+    #[test]
+    fn set_real_time_forwards_timestamp_with_zero_or_one_padding() {
+        for padding in [0, 1] {
+            let mut timestamp = RAW_TIMESTAMP;
+            timestamp[7] = padding;
+            timestamp[10..12].copy_from_slice(&(-330i16).to_le_bytes());
+            timestamp[12] = 3;
+            let AcpiTimeAlarmRequest::SetRealTime(decoded) = successful_setter_request(3, &timestamp) else {
+                panic!("expected SetRealTime");
+            };
+            assert_eq!(decoded.datetime.year(), 2026);
+            assert_eq!(u8::from(decoded.datetime.month()), 7);
+            assert_eq!(decoded.datetime.day(), 10);
+            assert_eq!(decoded.datetime.hour(), 12);
+            assert_eq!(decoded.datetime.minute(), 34);
+            assert_eq!(decoded.datetime.second(), 56);
+            assert_eq!(decoded.datetime.nanoseconds(), 789_000_000);
+            assert_eq!(i16::from(decoded.time_zone), -330);
+            assert_eq!(u8::from(decoded.dst_status), 3);
+        }
+    }
+
+    #[test]
+    fn clear_wake_status_uses_canonical_wire_contract() {
+        for (id, timer) in [(0u32, AcpiTimerId::AcPower), (1, AcpiTimerId::DcPower)] {
+            assert_eq!(
+                successful_setter_request(5, &id.to_le_bytes()),
+                AcpiTimeAlarmRequest::ClearWakeStatus(timer),
+            );
+        }
+    }
+
+    #[test]
+    fn set_expired_timer_policy_uses_canonical_wire_contract() {
+        for (id, timer) in [(0u32, AcpiTimerId::AcPower), (1, AcpiTimerId::DcPower)] {
+            for policy in [0u32, 45, u32::MAX] {
+                let mut args = [0u8; 8];
+                args[..4].copy_from_slice(&id.to_le_bytes());
+                args[4..].copy_from_slice(&policy.to_le_bytes());
+                assert_eq!(
+                    successful_setter_request(8, &args),
+                    AcpiTimeAlarmRequest::SetExpiredTimerPolicy(timer, AlarmExpiredWakePolicy(policy)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ffa_new_setters_map_remote_transport_and_protocol_errors() {
+        let remote_header = ec_relay::test_util::build_odp_error_header(TIME_ALARM_SERVICE_ID, 1);
+        let (success_header, _) = serialized_response::<0>(AcpiTimeAlarmResponse::OkNoData);
+        for (command, args) in [
+            (TimeAlarmCommand::SetRealTime, RAW_TIMESTAMP.as_slice()),
+            (TimeAlarmCommand::ClearWakeStatus, &[0; 4]),
+            (TimeAlarmCommand::SetExpiredTimerPolicy, &[0; 8]),
+        ] {
+            let wrong_header = ec_relay::build_odp_header(false, TIME_ALARM_SERVICE_ID, command.into());
+            assert_eq!(ffa_scalar_response(Some(remote_header), &[], command, args), 1);
+            assert_eq!(ffa_scalar_response(None, &[], command, args), u32::MAX);
+            assert_eq!(ffa_scalar_response(Some(wrong_header), &[], command, args), u32::MAX,);
+            assert_eq!(ffa_scalar_response(Some(success_header), &[0], command, args), u32::MAX,);
+        }
     }
 
     #[test]
