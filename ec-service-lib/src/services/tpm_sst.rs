@@ -7,6 +7,8 @@
 //! interface type for their device.
 #![allow(dead_code, unused_imports, unused_variables)]
 
+#[cfg(target_os = "none")]
+use aarch64_cpu::registers::{Readable, CNTFRQ_EL0, CNTVCT_EL0};
 use core::ptr;
 use log::info;
 use odp_ffa::{ErrorCode, Function, Yield};
@@ -17,8 +19,9 @@ use odp_ffa::{ErrorCode, Function, Yield};
 const INTERFACE_TYPE_MASK: u32 = 0x00F;
 const IDLE_BYPASS_MASK: u32 = 0x200;
 
-const DELAY_AMOUNT: u64 = 30000;
-const YIELD_AMOUNT: u64 = 10 * 1000; // 10ms
+const POLL_DELAY_US: u64 = 30;
+// Let the caller resume polling immediately; a nonzero hint can impose a minimum OS scheduling delay.
+const YIELD_TIMEOUT_HINT_NS: u64 = 0;
 
 const DEBUG_ENABLED: bool = false;
 
@@ -100,6 +103,53 @@ fn read_tpm_response(
         *byte = read_byte(offset)?;
     }
     Ok(length)
+}
+
+fn counter_ticks_for_microseconds(frequency_hz: u64, microseconds: u64) -> u64 {
+    let ticks = (frequency_hz as u128 * microseconds as u128).div_ceil(1_000_000);
+    ticks.min(u64::MAX as u128) as u64
+}
+
+fn start_timeout(timeout_us: u64) -> (u64, u64) {
+    #[cfg(target_os = "none")]
+    {
+        (
+            CNTVCT_EL0.get(),
+            counter_ticks_for_microseconds(CNTFRQ_EL0.get(), timeout_us),
+        )
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = timeout_us;
+        (0, 0)
+    }
+}
+
+fn timeout_expired(start: u64, timeout_ticks: u64) -> bool {
+    #[cfg(target_os = "none")]
+    {
+        CNTVCT_EL0.get().wrapping_sub(start) >= timeout_ticks
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (start, timeout_ticks);
+        true
+    }
+}
+
+fn delay_microseconds(microseconds: u64) {
+    #[cfg(target_os = "none")]
+    {
+        let delay_ticks = counter_ticks_for_microseconds(CNTFRQ_EL0.get(), microseconds);
+        let start = CNTVCT_EL0.get();
+        while CNTVCT_EL0.get().wrapping_sub(start) < delay_ticks {
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = microseconds;
+    }
 }
 
 #[repr(C, packed)]
@@ -221,22 +271,14 @@ impl TpmSst {
             as *mut PtpFifoRegisters
     }
 
-    // Temp function to busy loop before checking register contents.
-    fn delay(&self, delay_amount: u64) {
-        for i in 0..delay_amount {
-            // Do nothing
-        }
-    }
-
     // SAFETY: Function accesses the MMIO region associated with the external FIFO burst count
     //         register. The CRB/FIFO address is defaulted but is passed in during initialization
     //         of the library. It's the user's responsibility to verify they are initializing the
     //         library with a valid CRB/FIFO address.
     unsafe fn fifo_read_burst_count(&self, external_fifo: *mut PtpFifoRegisters) -> Result<u16, ErrorCode> {
-        // Slight delay before we start checking the registers.
-        self.delay(DELAY_AMOUNT);
+        delay_microseconds(POLL_DELAY_US);
 
-        let mut delay_amount: u64 = 0;
+        let (timeout_start, timeout_ticks) = start_timeout(PTP_TIMEOUT_D);
         loop {
             let burst_count_ptr = ptr::addr_of!((*external_fifo).burst_count) as *const u8;
             let burst_count_lo: u8 = ptr::read_volatile(burst_count_ptr);
@@ -247,14 +289,11 @@ impl TpmSst {
                 return Ok(burst_count);
             }
 
-            if delay_amount >= PTP_TIMEOUT_D {
+            if timeout_expired(timeout_start, timeout_ticks) {
                 break;
             }
 
-            // Convert milliseconds to nanoseconds.
-            Yield::new(YIELD_AMOUNT * 1000).exec().unwrap();
-
-            delay_amount += YIELD_AMOUNT;
+            Yield::new(YIELD_TIMEOUT_HINT_NS).exec().unwrap();
         }
 
         // NOTE: There should be a timeout or device error code for when the TPM
@@ -267,10 +306,9 @@ impl TpmSst {
     //         responsibility to verify they are initializing the library with a valid CRB/FIFO
     //         address.
     unsafe fn wait_register_bits(&self, register: *mut u32, bit_set: u32, bit_clear: u32, timeout: u64) -> ErrorCode {
-        // Slight delay before we start checking the registers.
-        self.delay(DELAY_AMOUNT);
+        delay_microseconds(POLL_DELAY_US);
 
-        let mut delay_amount: u64 = 0;
+        let (timeout_start, timeout_ticks) = start_timeout(timeout);
         loop {
             // Attempt to read the register based on the TPM type.
             let reg_read = if self.is_crb_interface {
@@ -284,14 +322,11 @@ impl TpmSst {
                 return ErrorCode::Ok;
             }
 
-            if delay_amount >= timeout {
+            if timeout_expired(timeout_start, timeout_ticks) {
                 break;
             }
 
-            // Convert milliseconds to nanoseconds.
-            Yield::new(YIELD_AMOUNT * 1000).exec().unwrap();
-
-            delay_amount += YIELD_AMOUNT;
+            Yield::new(YIELD_TIMEOUT_HINT_NS).exec().unwrap();
         }
 
         // NOTE: There should be a timeout or device error code for when the TPM
@@ -731,6 +766,14 @@ mod tests {
         };
         let addr = region.data.as_ptr() as u64;
         (region, addr)
+    }
+
+    #[test]
+    fn test_counter_ticks_for_microseconds() {
+        assert_eq!(counter_ticks_for_microseconds(62_500_000, 30), 1_875);
+        assert_eq!(counter_ticks_for_microseconds(1, 1), 1);
+        assert_eq!(counter_ticks_for_microseconds(62_500_000, 0), 0);
+        assert_eq!(counter_ticks_for_microseconds(u64::MAX, u64::MAX), u64::MAX);
     }
 
     #[test]
