@@ -579,6 +579,9 @@ impl TpmSstOps for TpmSst {
 
     // Initiates command execution. Copies command data from the internal CRB
     // to the external TPM, executes the command, and copies the response back.
+    /// # Safety
+    /// internal_tpm_crb must point to an initialized PtpCrbRegisters region that remains
+    /// valid for the lifetime of the call.
     unsafe fn start(&mut self, locality: u8, internal_tpm_crb: *mut PtpCrbRegisters) -> ErrorCode {
         unsafe {
             let response_capacity = (*internal_tpm_crb).crb_control_response_size as usize;
