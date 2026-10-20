@@ -202,7 +202,7 @@ struct TpmRequest {
 
 struct TpmResponse {
     tpm_status: u64,        // Arg0
-    tpm_payload: [u64; 13], // Arg1-Arg13 (x4-x17)
+    tpm_payload: [u64; 13], // Arg1-Arg13 (x5-x17)
 }
 
 impl From<MsgSendDirectReq2> for TpmRequest {
