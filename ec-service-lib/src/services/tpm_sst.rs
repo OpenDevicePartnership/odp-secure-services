@@ -223,7 +223,10 @@ fn dump_tpm_output_block(output_block_size: u32, output_block: &[u8]) {
 pub trait TpmSstOps {
     fn go_idle(&mut self, locality: u8) -> ErrorCode;
     fn cmd_ready(&mut self, locality: u8) -> ErrorCode;
-    fn start(&mut self, locality: u8, crb: *mut PtpCrbRegisters) -> ErrorCode;
+    /// # Safety
+    /// crb must point to an initialized PtpCrbRegisters region that remains
+    /// valid for the lifetime of the call.
+    unsafe fn start(&mut self, locality: u8, crb: *mut PtpCrbRegisters) -> ErrorCode;
     fn locality_request(&mut self, locality: u8) -> ErrorCode;
     fn locality_relinquish(&mut self, locality: u8) -> ErrorCode;
     fn is_idle_bypass_supported(&self) -> bool;
@@ -271,10 +274,11 @@ impl TpmSst {
             as *mut PtpFifoRegisters
     }
 
-    // SAFETY: Function accesses the MMIO region associated with the external FIFO burst count
-    //         register. The CRB/FIFO address is defaulted but is passed in during initialization
-    //         of the library. It's the user's responsibility to verify they are initializing the
-    //         library with a valid CRB/FIFO address.
+    /// # Safety
+    /// Function accesses the MMIO region associated with the external FIFO burst count
+    /// register. The CRB/FIFO address is defaulted but is passed in during initialization
+    /// of the library. It's the user's responsibility to verify they are initializing the
+    /// library with a valid CRB/FIFO address.
     unsafe fn fifo_read_burst_count(&self, external_fifo: *mut PtpFifoRegisters) -> Result<u16, ErrorCode> {
         delay_microseconds(POLL_DELAY_US);
 
@@ -301,10 +305,11 @@ impl TpmSst {
         Err(ErrorCode::Denied)
     }
 
-    // SAFETY: Function accesses the register being passed into the function. The CRB/FIFO address
-    //         is defaulted but is passed in during initialization  of the library. It's the user's
-    //         responsibility to verify they are initializing the library with a valid CRB/FIFO
-    //         address.
+    /// # Safety
+    /// Function accesses the register being passed into the function. The CRB/FIFO address
+    /// is defaulted but is passed in during initialization  of the library. It's the user's
+    /// responsibility to verify they are initializing the library with a valid CRB/FIFO
+    /// address.
     unsafe fn wait_register_bits(&self, register: *mut u32, bit_set: u32, bit_clear: u32, timeout: u64) -> ErrorCode {
         delay_microseconds(POLL_DELAY_US);
 
@@ -334,9 +339,10 @@ impl TpmSst {
         ErrorCode::Denied
     }
 
-    // SAFETY: Function copies data from the internal CRB to the external CRB/FIFO. This
-    //         function, in the FIFO instance, also calls fifo_read_burst_count and
-    //         wait_register_bits which are both marked as unsafe functions.
+    /// # Safety
+    /// Function copies data from the internal CRB to the external CRB/FIFO. This
+    /// function, in the FIFO instance, also calls fifo_read_burst_count and
+    /// wait_register_bits which are both marked as unsafe functions.
     unsafe fn copy_command_data(&self, locality: u8, tpm_command_buffer: &[u8], command_data_len: u32) -> ErrorCode {
         // Determine which TPM structure to access.
         if self.is_crb_interface {
@@ -393,8 +399,9 @@ impl TpmSst {
         }
     }
 
-    // SAFETY: Function writes to the start/go register which initiates a TPM transaction.
-    //         This function also calls wait_register_bits which is marked as unsafe.
+    /// # Safety
+    /// Function writes to the start/go register which initiates a TPM transaction.
+    /// This function also calls wait_register_bits which is marked as unsafe.
     unsafe fn start_command(&self, locality: u8) -> ErrorCode {
         // Determine which TPM structure to access.
         if self.is_crb_interface {
@@ -426,9 +433,10 @@ impl TpmSst {
         }
     }
 
-    // SAFETY: Function copies data from the external CRB/FIFO to the internal CRB. This
-    //         function, in the FIFO instance, also calls fifo_read_burst_count which is
-    //         also marked as unsafe.
+    /// # Safety
+    /// Function copies data from the external CRB/FIFO to the internal CRB. This
+    /// function, in the FIFO instance, also calls fifo_read_burst_count which is
+    /// also marked as unsafe.
     unsafe fn copy_response_data(&self, locality: u8, tpm_command_buffer: &mut [u8]) -> Result<usize, ErrorCode> {
         // Determine which TPM structure to access.
         if self.is_crb_interface {
@@ -571,7 +579,10 @@ impl TpmSstOps for TpmSst {
 
     // Initiates command execution. Copies command data from the internal CRB
     // to the external TPM, executes the command, and copies the response back.
-    fn start(&mut self, locality: u8, internal_tpm_crb: *mut PtpCrbRegisters) -> ErrorCode {
+    /// # Safety
+    /// internal_tpm_crb must point to an initialized PtpCrbRegisters region that remains
+    /// valid for the lifetime of the call.
+    unsafe fn start(&mut self, locality: u8, internal_tpm_crb: *mut PtpCrbRegisters) -> ErrorCode {
         unsafe {
             let response_capacity = (*internal_tpm_crb).crb_control_response_size as usize;
             let command_capacity = (*internal_tpm_crb).crb_control_command_size as usize;

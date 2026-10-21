@@ -21,7 +21,7 @@ pub use notify::Notify;
 pub use thermal::Thermal;
 pub use time_alarm::TimeAlarm;
 pub use tpm::TpmService;
-pub use tpm_sst::TpmSst;
+pub use tpm_sst::{PtpCrbRegisters, TpmSst, TpmSstOps};
 pub use tpm_stub::TpmServiceStub;
 pub use ucsi::Ucsi;
 

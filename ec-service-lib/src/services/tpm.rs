@@ -2,10 +2,9 @@
 //!
 //! Implementation for the TPM Service. This library is based off the ARM spec:
 //! TPM Service Command Response Buffer Interface Over FF-A.
-//! <https://developer.arm.com/documentation/den0138/0100/?lang=en>
+//! <https://support.arm.com/documentation/den0138/0101/>
 //!
-//! The state flow is based off the TCG PC Client Specific Platform TPM Profile
-//! for TPM 2.0.
+//! The state flow is based off the TCG PC Client Specific Platform TPM Profile for TPM 2.0.
 //! <https://trustedcomputinggroup.org/resource/pc-client-platform-tpm-profile-ptp-specification/>
 //!
 //! Figure 4 — TPM State Diagram for CRB Interface
@@ -116,7 +115,8 @@ pub enum TpmFunction {
     RegisterForNotification = 0x0f00_0301,
     UnregisterForNotification = 0x0f00_0401,
     FinishNotified = 0x0f00_0501,
-    ManageLocality = 0x1f00_0001,
+    GetCrbInfo = 0x0f00_0601,
+    ManageLocality = 0x0f00_0701,
     #[cfg(feature = "test-bypass-locality-check")]
     TestWriteCrb = 0xDE00_0001,
 }
@@ -136,6 +136,7 @@ pub enum TpmStatus {
     Already = 0x8e00_0009,
     Denied = 0x8e00_000a,
     NoMem = 0x8e00_000b,
+    LocStateError = 0x8e00_000c,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,12 +152,23 @@ pub const TPM2_FFA_MANAGE_LOCALITY_CLOSE: u16 = 0x1;
 // TPM Service Defines
 // ---------------------------------------------------------------------------
 pub const TPM_MAJOR_VER: u64 = 0x1;
-pub const TPM_MINOR_VER: u64 = 0x0;
+pub const TPM_MINOR_VER: u64 = 0x1;
 pub const NUM_LOCALITIES: u8 = 5;
 const NO_ACTIVE_LOCALITY: u8 = NUM_LOCALITIES; // Invalid locality
 
 // GetFeatureInfo payload flags. Bit 0 = TPM notifications supported.
 const TPM_FEATURE_NOTIFICATIONS_SUPPORTED: u64 = 1 << 0;
+
+// ---------------------------------------------------------------------------
+// TPM Service CRB Region Sizes
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TpmCrbRegionSize {
+    Size4k = 0,
+    Size16k = 1,
+    Size64k = 2,
+}
 
 // ---------------------------------------------------------------------------
 // TPM Service States
@@ -189,8 +201,8 @@ struct TpmRequest {
 }
 
 struct TpmResponse {
-    tpm_status: u64,  // Arg0
-    tpm_payload: u64, // Arg1
+    tpm_status: u64,        // Arg0
+    tpm_payload: [u64; 13], // Arg1-Arg13 (x5-x17)
 }
 
 impl From<MsgSendDirectReq2> for TpmRequest {
@@ -211,9 +223,8 @@ impl From<MsgSendDirectReq2> for TpmRequest {
 impl From<TpmResponse> for DirectMessagePayload {
     fn from(resp: TpmResponse) -> Self {
         // x4-x17 are for payload (14 registers)
-        let payload_regs = [resp.tpm_status, resp.tpm_payload];
-        let payload_bytes_iter = payload_regs.iter().flat_map(|&reg| u64::to_le_bytes(reg).into_iter());
-        DirectMessagePayload::from_iter(payload_bytes_iter)
+        let registers = core::iter::once(resp.tpm_status).chain(resp.tpm_payload);
+        DirectMessagePayload::from_iter(registers.flat_map(u64::to_le_bytes))
     }
 }
 
@@ -263,12 +274,13 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 
     // Initializes the internal CRB for a given locality.
-    // SAFETY: Function accesses the internal CRB. The address is defaulted but should
-    //         be set during init of the library. The helper that returns the pointer
-    //         based on the locality should always return a valid locality region as
-    //         locality is always verified before any calls to these functions. It's
-    //         the user's responsibility to make sure the address is valid when
-    //         initializing the library.
+    /// # Safety
+    /// Function accesses the internal CRB. The address is defaulted but should
+    /// be set during init of the library. The helper that returns the pointer
+    /// based on the locality should always return a valid locality region as
+    /// locality is always verified before any calls to these functions. It's
+    /// the user's responsibility to make sure the address is valid when
+    /// initializing the library.
     unsafe fn init_internal_crb(&self, locality: u8) {
         let crb = self.crb_ptr(locality);
         info!("Locality: {:X} - InternalTpmCrb Address: {:X}", locality, crb as usize);
@@ -288,12 +300,13 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 
     // Cleans the internal CRB, putting registers into a known-good state.
-    // SAFETY: Function accesses the internal CRB. The address is defaulted but should
-    //         be set during init of the library. The helper that returns the pointer
-    //         based on the locality should always return a valid locality region as
-    //         locality is always verified before any calls to these functions. It's
-    //         the user's responsibility to make sure the address is valid when
-    //         initializing the library.
+    /// # Safety
+    /// Function accesses the internal CRB. The address is defaulted but should
+    /// be set during init of the library. The helper that returns the pointer
+    /// based on the locality should always return a valid locality region as
+    /// locality is always verified before any calls to these functions. It's
+    /// the user's responsibility to make sure the address is valid when
+    /// initializing the library.
     unsafe fn clean_internal_crb(&self) {
         // If the user has never requested a locality, don't clean, no need.
         // We should only ever clean the active locality as when localities change
@@ -345,12 +358,13 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 
     // Handles TPM commands according to the CRB state machine.
-    // SAFETY: Function may initialize/zero the internal CRB buffer during successful completion
-    //         of a TPM transaction. The address is defaulted but should be set during init of the
-    //         library. The helper that returns the pointer based on the locality should always
-    //         return a valid locality region as locality is always verified before any calls to
-    //         these functions. It's the user's responsibility to make sure the address is valid when
-    //         initializing the library.
+    /// # Safety
+    /// Function may initialize/zero the internal CRB buffer during successful completion
+    /// of a TPM transaction. The address is defaulted but should be set during init of the
+    /// library. The helper that returns the pointer based on the locality should always
+    /// return a valid locality region as locality is always verified before any calls to
+    /// these functions. It's the user's responsibility to make sure the address is valid when
+    /// initializing the library.
     unsafe fn handle_command(&mut self) -> TpmStatus {
         let crb = &mut *self.crb_ptr(self.active_locality);
 
@@ -460,9 +474,10 @@ impl<S: TpmSstOps> TpmService<S> {
     }
 
     // Handles locality request / relinquish.
-    // SAFETY: Upon successful TPM locality request the internal CRB at that locality gets initialized.
-    //         The function to handle this is marked as unsafe as it access the memory thus this function
-    //         is also unsafe.
+    /// # Safety
+    /// Upon successful TPM locality request the internal CRB at that locality gets initialized.
+    /// The function to handle this is marked as unsafe as it access the memory thus this function
+    /// is also unsafe.
     unsafe fn handle_locality_request(&mut self, locality: u8) -> TpmStatus {
         let crb = &mut *self.crb_ptr(locality);
         let status: ErrorCode;
@@ -510,7 +525,7 @@ impl<S: TpmSstOps> TpmService<S> {
 
     // Specification Functions
     fn get_interface_version_handler(&self, _request: &TpmRequest, response: &mut TpmResponse) -> TpmStatus {
-        response.tpm_payload = (TPM_MAJOR_VER << 16) | TPM_MINOR_VER;
+        response.tpm_payload[0] = (TPM_MAJOR_VER << 16) | TPM_MINOR_VER;
         TpmStatus::OkResultsReturned
     }
 
@@ -518,17 +533,18 @@ impl<S: TpmSstOps> TpmService<S> {
         // Feature ID is in the function field (Arg1). Only the notification
         // feature (RegisterForNotification) is currently queryable.
         if request.function == TpmFunction::RegisterForNotification as u64 {
-            response.tpm_payload = TPM_FEATURE_NOTIFICATIONS_SUPPORTED;
+            response.tpm_payload[0] = TPM_FEATURE_NOTIFICATIONS_SUPPORTED;
             TpmStatus::OkResultsReturned
         } else {
             TpmStatus::NotSup
         }
     }
 
-    // SAFETY: Function invokes both handle_command and handle_locality_request which can
-    //         access/alter the internal CRB. This function also calls clean_internal_crb
-    //         which makes sure the CRB at the current active locality is in a known and
-    //         valid state by setting the memory contents (registers) to known values.
+    /// # Safety
+    /// Function invokes both handle_command and handle_locality_request which can
+    /// access/alter the internal CRB. This function also calls clean_internal_crb
+    /// which makes sure the CRB at the current active locality is in a known and
+    /// valid state by setting the memory contents (registers) to known values.
     unsafe fn start_handler(&mut self, request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         let function = request.function as u16;
         let locality = request.locality as u8;
@@ -587,20 +603,40 @@ impl<S: TpmSstOps> TpmService<S> {
         }
     }
 
+    fn get_crb_info(&mut self, _request: &TpmRequest, response: &mut TpmResponse) -> TpmStatus {
+        response.tpm_payload[0] =
+            self.tpm_internal_crb_address + mem::offset_of!(PtpCrbRegisters, crb_control_request) as u64;
+        response.tpm_payload[1] = TpmCrbRegionSize::Size4k as u64;
+        TpmStatus::OkResultsReturned
+    }
+
     fn manage_locality_handler(&mut self, request: &TpmRequest, _response: &mut TpmResponse) -> TpmStatus {
         let locality_operation = request.function as u16;
         let locality = request.locality as u8;
         let mut return_val: TpmStatus = TpmStatus::Ok;
 
-        if locality >= NUM_LOCALITIES {
+        // Only localities 2 and 3 are valid via spec v1.1
+        if request.locality != 2 && request.locality != 3 {
             error!("Invalid Locality");
             return TpmStatus::InvArg;
         }
 
+        // Locality requested must not be active
+        if locality == self.active_locality {
+            error!("Locality is active");
+            return TpmStatus::LocStateError;
+        }
+
         if locality_operation == TPM2_FFA_MANAGE_LOCALITY_OPEN {
+            if self.locality_states[locality as usize] == TpmLocalityState::Open {
+                return TpmStatus::Already;
+            }
             info!("Locality{:X} Opened", locality);
             self.locality_states[locality as usize] = TpmLocalityState::Open;
         } else if locality_operation == TPM2_FFA_MANAGE_LOCALITY_CLOSE {
+            if self.locality_states[locality as usize] == TpmLocalityState::Closed {
+                return TpmStatus::Already;
+            }
             info!("Locality{:X} Closed", locality);
             self.locality_states[locality as usize] = TpmLocalityState::Closed;
         } else {
@@ -710,7 +746,7 @@ impl<S: TpmSstOps> Service for TpmService<S> {
         let req_payload: TpmRequest = msg.clone().into();
         let mut resp_payload: TpmResponse = TpmResponse {
             tpm_status: (TpmStatus::Ok as u64),
-            tpm_payload: (0),
+            tpm_payload: [0; 13],
         };
 
         resp_payload.tpm_status = match req_payload.opcode {
@@ -731,6 +767,9 @@ impl<S: TpmSstOps> Service for TpmService<S> {
             }
             opcode if opcode == TpmFunction::FinishNotified as u64 => {
                 self.finish_handler(&req_payload, &mut resp_payload) as u64
+            }
+            opcode if opcode == TpmFunction::GetCrbInfo as u64 => {
+                self.get_crb_info(&req_payload, &mut resp_payload) as u64
             }
             opcode if opcode == TpmFunction::ManageLocality as u64 => {
                 // Only allow from a logical SP owned by TF-A (source_id high byte == 0xFF).
@@ -772,7 +811,6 @@ mod tests {
     use odp_ffa::DirectMessagePayload;
 
     const TPM_SERVICE_UUID: Uuid = uuid!("17b862a4-1806-4faf-86b3-089a58353861");
-    const EXTERNAL_TPM_CRB_ADDR: u64 = 0x0C000000;
 
     // =======================================================================
     // Mock CrbRegion
@@ -803,7 +841,7 @@ mod tests {
         fn cmd_ready(&mut self, _locality: u8) -> ErrorCode {
             ErrorCode::Ok
         }
-        fn start(&mut self, _locality: u8, _crb: *mut PtpCrbRegisters) -> ErrorCode {
+        unsafe fn start(&mut self, _locality: u8, _crb: *mut PtpCrbRegisters) -> ErrorCode {
             ErrorCode::Ok
         }
         fn locality_request(&mut self, _locality: u8) -> ErrorCode {
@@ -1081,16 +1119,6 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new(), addr);
         unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
-
-        let open_msg = direct_req2_msg(
-            0xFF00,
-            0x0000,
-            TpmFunction::ManageLocality as u64,
-            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x00, // Locality 0
-        );
-        let open_resp = service.ffa_msg_send_direct_req2(open_msg).unwrap();
-        assert_eq!(resp_status(&open_resp), TpmStatus::Ok as u64);
         assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
 
         // Set the locality control register to indicate a locality request.
@@ -1114,16 +1142,6 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new(), addr);
         unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
-
-        let open_msg = direct_req2_msg(
-            0xFF00,
-            0x0000,
-            TpmFunction::ManageLocality as u64,
-            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x00, // Locality 0
-        );
-        let open_resp = service.ffa_msg_send_direct_req2(open_msg).unwrap();
-        assert_eq!(resp_status(&open_resp), TpmStatus::Ok as u64);
         assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
 
         // Set the locality control register to indicate a locality request.
@@ -1190,16 +1208,6 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new(), addr);
         unsafe { service.init() };
         let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(0)) };
-
-        let open_msg = direct_req2_msg(
-            0xFF00,
-            0x0000,
-            TpmFunction::ManageLocality as u64,
-            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x00, // Locality 0
-        );
-        let open_resp = service.ffa_msg_send_direct_req2(open_msg).unwrap();
-        assert_eq!(resp_status(&open_resp), TpmStatus::Ok as u64);
         assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
 
         // Set the locality control register to indicate a locality request.
@@ -1262,16 +1270,9 @@ mod tests {
 
     #[test]
     fn test_start_locality_mismatch() {
-        let mut service = TpmService::new(MockTpmSst::new(), 0x0);
-        let open_msg = direct_req2_msg(
-            0xFF00,
-            0x0000,
-            TpmFunction::ManageLocality as u64,
-            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x00, // Locality 0
-        );
-        let open_resp = service.ffa_msg_send_direct_req2(open_msg).unwrap();
-        assert_eq!(resp_status(&open_resp), TpmStatus::Ok as u64);
+        let (_buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
 
         // NOTE: Locality 0 must be requested before initiating a start command.
         let start_msg = direct_req2_msg(
@@ -1340,6 +1341,24 @@ mod tests {
     }
 
     // =======================================================================
+    // TpmService::GetCrbInfo Test(s)
+    // =======================================================================
+    #[test]
+    fn test_get_crb_info() {
+        let crb_address = 0xDEAD_BEEF;
+        let mut service = TpmService::new(MockTpmSst::new(), crb_address);
+        let msg = direct_req2_msg(0x0000, 0x0000, TpmFunction::GetCrbInfo as u64, 0x00, 0x00);
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::OkResultsReturned as u64);
+        let payload = resp.payload();
+        assert_eq!(
+            payload.register_at(1),
+            crb_address + mem::offset_of!(PtpCrbRegisters, crb_control_request) as u64
+        );
+        assert_eq!(payload.register_at(2), TpmCrbRegionSize::Size4k as u64);
+    }
+
+    // =======================================================================
     // TpmService::ManageLocality Test(s)
     // =======================================================================
     #[test]
@@ -1350,11 +1369,20 @@ mod tests {
             0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x00, // Locality 0
+            0x02, // Locality 2
         );
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
-        assert_eq!(service.locality_states[0], TpmLocalityState::Open);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x03, // Locality 3
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert_eq!(service.locality_states[3], TpmLocalityState::Open);
     }
 
     #[test]
@@ -1362,17 +1390,17 @@ mod tests {
         let mut service = TpmService::new(MockTpmSst::new(), 0x0);
         // NOTE: This is only possible because this unit test is within this module. The
         //       locality_states array should only be accessible by the service.
-        service.locality_states[0] = TpmLocalityState::Open;
+        service.locality_states[2] = TpmLocalityState::Open;
         let msg = direct_req2_msg(
             0xFF01,
             0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
-            0x00, // Locality 0
+            0x02, // Locality 2
         );
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
-        assert_eq!(service.locality_states[0], TpmLocalityState::Closed);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Closed);
     }
 
     #[test]
@@ -1383,7 +1411,7 @@ mod tests {
             0x0000,
             TpmFunction::ManageLocality as u64,
             0xFF, // Invalid Function
-            0x00,
+            0x02, // Locality 2
         );
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::InvArg as u64);
@@ -1397,7 +1425,34 @@ mod tests {
             0x0000,
             TpmFunction::ManageLocality as u64,
             TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-            0x10, // Invalid Locality
+            0x00, // Invalid Locality 0
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::InvArg as u64);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x01, // Invalid Locality 1
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::InvArg as u64);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x04, // Invalid Locality 4
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::InvArg as u64);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0xFF, // Invalid Locality
         );
         let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
         assert_eq!(resp_status(&resp), TpmStatus::InvArg as u64);
@@ -1419,37 +1474,114 @@ mod tests {
     }
 
     #[test]
-    fn test_manage_locality_open_all_localities() {
+    fn test_manage_locality_already_open() {
         let mut service = TpmService::new(MockTpmSst::new(), 0x0);
-        for loc in 0..NUM_LOCALITIES {
-            let msg = direct_req2_msg(
-                0xFF00,
-                0x0000,
-                TpmFunction::ManageLocality as u64,
-                TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
-                loc as u64,
-            );
-            let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
-            assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
-            assert_eq!(service.locality_states[loc as usize], TpmLocalityState::Open);
-        }
+        // Open locality2 twice
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Open);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Already as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Open);
     }
 
     #[test]
-    fn test_manage_locality_close_all_localities() {
+    fn test_manage_locality_already_closed() {
         let mut service = TpmService::new(MockTpmSst::new(), 0x0);
-        for locality in 0..NUM_LOCALITIES {
-            let msg = direct_req2_msg(
-                0xFF00,
-                0x0000,
-                TpmFunction::ManageLocality as u64,
-                TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
-                locality as u64,
-            );
-            let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
-            assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
-            assert_eq!(service.locality_states[locality as usize], TpmLocalityState::Closed);
-        }
+        // Open locality2
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Open);
+        // Close locality2 twice
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Closed);
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Already as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Closed);
+    }
+
+    #[test]
+    fn test_manage_locality_active() {
+        let (_buff, addr) = alloc_crb_region();
+        let mut service = TpmService::new(MockTpmSst::new(), addr);
+        unsafe { service.init() };
+        let crb: &mut PtpCrbRegisters = unsafe { &mut (*service.crb_ptr(2)) };
+        assert_eq!(service.active_locality, NO_ACTIVE_LOCALITY);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Closed);
+
+        // Open locality2
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_OPEN as u64,
+            0x02, // Locality 2
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::Ok as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Open);
+
+        // Set the locality control register to indicate a locality request.
+        crb.locality_control = PTP_CRB_LOCALITY_CONTROL_REQUEST_ACCESS;
+
+        let req_locality_msg = direct_req2_msg(
+            0x0000,
+            0x0000,
+            TpmFunction::Start as u64,
+            TPM2_FFA_START_FUNC_QUALIFIER_LOCALITY as u64,
+            0x02, // Locality 2
+        );
+        let req_locality_resp = service.ffa_msg_send_direct_req2(req_locality_msg).unwrap();
+        assert_eq!(resp_status(&req_locality_resp), TpmStatus::Ok as u64);
+        assert_eq!(service.active_locality, 2);
+        assert_eq!(service.current_state, TpmState::Idle);
+
+        let msg = direct_req2_msg(
+            0xFF00,
+            0x0000,
+            TpmFunction::ManageLocality as u64,
+            TPM2_FFA_MANAGE_LOCALITY_CLOSE as u64,
+            0x02,
+        );
+        let resp = service.ffa_msg_send_direct_req2(msg).unwrap();
+        assert_eq!(resp_status(&resp), TpmStatus::LocStateError as u64);
+        assert_eq!(service.locality_states[2], TpmLocalityState::Open);
     }
 
     // =======================================================================
