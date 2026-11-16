@@ -1,4 +1,4 @@
-//! `Battery` — FFA service that proxies Normal-World `GetBix`, `GetBst`,
+//! `Battery` — FFA service that proxies Normal-World `GetBix`, `GetBst`, `GetPsr`,
 //! and `SetBtp` requests to the EC over MCTP.
 //!
 //! Transport-agnostic via the [`crate::services::ec_relay::Relay`] trait.
@@ -26,8 +26,10 @@
 //! `battery_present_voltage`).
 //!
 //! `GetBix` uses the same 1-byte request body and returns the canonical
-//! 100-byte BIX body. `SetBtp` sends the battery id followed by one LE
-//! `u32` trip point and receives an empty success body.
+//! 100-byte BIX body. `GetPsr` uses the same 1-byte request body and returns
+//! one LE `u32` power source (`0` offline, `1` online), passed through at
+//! FFA payload offset zero for ACPI `_PSR`. `SetBtp` sends the battery id
+//! followed by one LE `u32` trip point and receives an empty success body.
 //!
 //! # SP-side runtime serialization is manual
 //!
@@ -38,7 +40,7 @@
 //! MANUALLY (1-byte request payload; 4 LE u32 dwords for the response
 //! body). The wire-format gate test in the `tests` module below
 //! round-trips bytes through the EC's OWN `SerializableMessage` impl
-//! (via `[dev-dependencies]`) so any drift fails the build. `GetBix` and
+//! (via `[dev-dependencies]`) so any drift fails the build. `GetBix`, `GetPsr`, and
 //! `SetBtp` use the same manual runtime serialization strategy.
 
 use core::cell::RefCell;
@@ -59,6 +61,7 @@ pub const BATTERY_SERVICE_ID: u8 = 0x08;
 pub enum BatteryCommand {
     GetBix = 1,
     GetBst = 2,
+    GetPsr = 3,
     SetBtp = 6,
 }
 
@@ -163,6 +166,18 @@ impl<'r, R: Relay> Battery<'r, R> {
             })
             .map_err(BatteryError::Relay)
     }
+
+    pub fn get_psr(&self, battery_id: u8) -> core::result::Result<u32, BatteryError> {
+        self.relay
+            .borrow_mut()
+            .invoke_request(
+                BATTERY_SERVICE_ID,
+                BatteryCommand::GetPsr.into(),
+                &[battery_id],
+                |body| take_exact_array::<4>(body).map(u32::from_le_bytes),
+            )
+            .map_err(BatteryError::Relay)
+    }
 }
 
 impl<R: Relay> Service for Battery<'_, R> {
@@ -209,6 +224,15 @@ impl<R: Relay> Service for Battery<'_, R> {
                     odp_ffa::DirectMessagePayload::from_iter(core::iter::empty()),
                 ))
             }
+            BatteryCommand::GetPsr => {
+                let psr = self
+                    .get_psr(battery_id)
+                    .map_err(|_| FfaError::Other("Battery: GetPsr round-trip failed (transport or wire decode)"))?;
+                Ok(MsgSendDirectResp2::from_req_with_payload(
+                    &msg,
+                    odp_ffa::DirectMessagePayload::from_iter(psr.to_le_bytes()),
+                ))
+            }
         }
     }
 }
@@ -230,7 +254,7 @@ mod tests {
     use super::*;
     use crate::services::ec_relay::test_util::{frame_response_packets, strip_mctp_framing, LoopbackTransport};
     use crate::services::ec_relay::{self, EcRelay};
-    use battery_service_interface::{BatteryState, BstReturn};
+    use battery_service_interface::{BatteryState, BstReturn, PowerSource, PsrReturn};
     use battery_service_relay::{AcpiBatteryRequest, AcpiBatteryResponse};
     use embedded_services::relay::SerializableMessage;
     use odp_ffa::{DirectMessagePayload, HasRegisterPayload};
@@ -414,5 +438,43 @@ mod tests {
             AcpiBatteryRequest::deserialize(BatteryCommand::SetBtp.into(), &inner[4..]),
             Ok(AcpiBatteryRequest::SetBtp { battery_id: 3, btp }) if btp.trip_point == trip_point
         ));
+    }
+
+    #[test]
+    fn ffa_get_psr_relays_battery_id_and_returns_power_source_at_offset_zero() {
+        let mut body = [0u8; 4];
+        let written = AcpiBatteryResponse::GetPsr {
+            psr: PsrReturn {
+                power_source: PowerSource::Online,
+            },
+        }
+        .serialize(&mut body)
+        .expect("EC-side GetPsr serialize");
+        assert_eq!(written, 4, "GetPsr response body must be one DWORD");
+
+        let relay = relay_primed_with_response(BatteryCommand::GetPsr, &body);
+        let mut svc = Battery::new(&relay);
+
+        let battery_id = 0x03;
+        let response = svc
+            .ffa_msg_send_direct_req2(make_ffa_request(u16::from(BatteryCommand::GetPsr) as u8, battery_id))
+            .expect("GetPsr returns DIRECT_RESP2");
+
+        let inner = strip_mctp_framing(&relay.borrow().transport().tx);
+        let mut expected = ec_relay::build_odp_header(true, BATTERY_SERVICE_ID, BatteryCommand::GetPsr.into()).to_vec();
+        expected.push(battery_id);
+        assert_eq!(inner, expected, "requested battery_id must be the only EC request byte");
+        assert!(matches!(
+            AcpiBatteryRequest::deserialize(BatteryCommand::GetPsr.into(), &inner[4..]),
+            Ok(AcpiBatteryRequest::GetPsr { battery_id: 3 })
+        ));
+
+        // ACPI `_PSR` reads one DWORD at BUFF byte 32, i.e. FFA payload bytes 0..4.
+        assert_eq!(
+            response.payload().u32_at(0),
+            1,
+            "PowerSource::Online must be 1 at payload offset 0"
+        );
+        assert!(response.payload().u8_iter().skip(4).all(|byte| byte == 0));
     }
 }
