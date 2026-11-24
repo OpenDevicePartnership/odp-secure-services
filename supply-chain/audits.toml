@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.heapless]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-deploy"
+delta = "0.9.3 -> 0.9.4"
+notes = "Safe-to-deploy approved by Felipe Balbi based on his manual review of the 0.9.3 to 0.9.4 changes."
+
 [[audits.husky-rs]]
 who = "Dylan Knutson <tcdknutson@gmail.com>"
 criteria = "safe-to-run"
