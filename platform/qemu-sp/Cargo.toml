@@ -30,7 +30,3 @@ aarch64-haf = { workspace = true, optional = true }
 hafnium = { workspace = true, optional = true }
 log.workspace = true
 uuid.workspace = true
-
-
-[build-dependencies]
-chrono = "0.4"

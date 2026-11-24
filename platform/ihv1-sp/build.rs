@@ -5,8 +5,14 @@
 use std::env;
 use std::path::PathBuf;
 
+#[path = "../build_time.rs"]
+mod build_time;
+
 fn main() {
-    println!("cargo:rustc-env=BUILD_TIME={}", chrono::Utc::now().to_rfc3339());
+    println!(
+        "cargo:rustc-env=BUILD_TIME={}",
+        build_time::format(std::time::SystemTime::now())
+    );
     if env::var("CARGO_CFG_TARGET_OS").unwrap() == "none" {
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let image_ld_path = manifest_dir.join("linker").join("image.ld");
